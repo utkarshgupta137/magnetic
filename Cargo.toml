@@ -1,0 +1,4 @@
+[package]
+name = "magnetic"
+version = "1.0.0"
+authors = ["John Shaw <jshaw@shawnation.com>"]
