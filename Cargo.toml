@@ -4,6 +4,5 @@ description = "Low-latency lock-free queues"
 version = "1.0.0"
 authors = ["John Shaw <jshaw@shawnation.com>"]
 license = "MIT"
-license-file = "LICENSE"
 repository = "https://github.com/johnshaw/magnetic"
 keywords = ["lock-free", "queue"]
