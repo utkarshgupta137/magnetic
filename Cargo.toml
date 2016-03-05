@@ -6,4 +6,4 @@ authors = ["John Shaw <jshaw@shawnation.com>"]
 license = "MIT"
 license-file = "LICENSE"
 repository = "https://github.com/johnshaw/magnetic"
-keywords = ["lock-free", "queue", "spsc", "spmc", "mpsc", "mpmc"]
+keywords = ["lock-free", "queue"]
