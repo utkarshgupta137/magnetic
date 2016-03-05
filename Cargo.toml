@@ -6,3 +6,4 @@ authors = ["John Shaw <jshaw@shawnation.com>"]
 license = "MIT"
 repository = "https://github.com/johnshaw/magnetic"
 keywords = ["lock-free", "queue"]
+documentation = "http://johnshaw.github.io/doc/magnetic/magnetic"
