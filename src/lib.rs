@@ -67,12 +67,12 @@ pub trait Producer<T> {
 /// always `Send`, but is only `Sync` for multi-consumer (SPMC, MPMC) queues.
 pub trait Consumer<T> {
     /// Remove value from the end of the queue. This method will block if the
-    /// queue is currently full.
+    /// queue is currently empty.
     fn pop(&self) -> T;
 
     /// Attempt to remove a value from the end of the queue. If the value was
-    /// added successfully, `None` will be returned. If unsuccessful, `value`
-    /// will be returned. An unsuccessful pop indicates that the queue was
-    /// full.
+    /// removed successfully, `Some(T)` will be returned. If unsuccessful,
+    /// `None` will be returned. An unsuccessful pop indicates that the queue
+    /// was empty.
     fn try_pop(&self) -> Option<T>;
 }
