@@ -153,6 +153,7 @@ impl<T, B: Buffer<T>> Consumer<T> for MPSCConsumer<T, B> {
 mod test {
     use std::sync::Arc;
     use std::thread::spawn;
+    use std::sync::mpsc::channel;
 
     use test::Bencher;
 
@@ -245,6 +246,31 @@ mod test {
 
         p1.push(0);
         c2.pop();
+        pong.join().unwrap();
+    }
+
+    #[bench]
+    fn ping_pong_std(b: &mut Bencher) {
+        let (p1, c1) = channel();
+        let (p2, c2) = channel();
+
+        let pong = spawn(move || {
+            loop {
+                let n = c1.recv().unwrap();
+                p2.send(n);
+                if n == 0 {
+                    break
+                }
+            }
+        });
+
+        b.iter(|| {
+            p1.send(1234);
+            c2.recv();
+        });
+
+        p1.send(0);
+        c2.recv();
         pong.join().unwrap();
     }
 }
