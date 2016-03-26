@@ -49,6 +49,20 @@ pub mod spmc;
 pub mod mpmc;
 mod util;
 
+/// Possible errors for `Producter::try_push`
+#[derive(Debug, PartialEq)]
+pub enum TryPushError<T> {
+    /// Queue was full
+    Full(T),
+}
+
+/// Possible errors for `Consumer::try_pop`
+#[derive(Debug, PartialEq)]
+pub enum TryPopError {
+    /// Queue was empty
+    Empty,
+}
+
 /// The consumer end of the queue allows for sending data. `Producer<T>` is
 /// always `Send`, but is only `Sync` for multi-producer (MPSC, MPMC) queues.
 pub trait Producer<T> {
@@ -60,7 +74,7 @@ pub trait Producer<T> {
     /// added successfully, `None` will be returned. If unsuccessful, `value`
     /// will be returned. An unsuccessful push indicates that the queue was
     /// full.
-    fn try_push(&self, value: T) -> Option<T>;
+    fn try_push(&self, value: T) -> Result<(), TryPushError<T>>;
 }
 
 /// The consumer end of the queue allows for receiving data. `Consumer<T>` is
@@ -74,5 +88,5 @@ pub trait Consumer<T> {
     /// removed successfully, `Some(T)` will be returned. If unsuccessful,
     /// `None` will be returned. An unsuccessful pop indicates that the queue
     /// was empty.
-    fn try_pop(&self) -> Option<T>;
+    fn try_pop(&self) -> Result<T, TryPopError>;
 }
