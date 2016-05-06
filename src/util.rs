@@ -3,10 +3,16 @@ use std::ptr;
 
 use super::buffer::Buffer;
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(all(feature="unstable", any(target_arch = "x86", target_arch = "x86_64")))]
 #[inline(always)]
 pub fn pause() {
     unsafe { asm!("PAUSE") };
+}
+
+#[cfg(all(not(feature="unstable"), any(target_arch = "x86", target_arch = "x86_64")))]
+#[inline(always)]
+pub fn pause() {
+    // nop
 }
 
 #[cfg(all(not(target_arch = "x86"), not(target_arch = "x86_64")))]

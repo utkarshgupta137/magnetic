@@ -36,10 +36,11 @@
 //! t2.join().unwrap();
 //! ```
 
-#![feature(asm)]
-#![feature(test)]
+#![cfg_attr(feature = "unstable", feature(test, asm))]
+
 #![deny(missing_docs)]
 
+#[cfg(feature = "unstable")]
 extern crate test;
 
 pub mod buffer;

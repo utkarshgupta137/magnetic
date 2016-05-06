@@ -7,3 +7,6 @@ license = "MIT"
 repository = "https://github.com/johnshaw/magnetic"
 keywords = ["lock-free", "queue"]
 documentation = "http://johnshaw.github.io/magnetic/doc/magnetic"
+
+[features]
+unstable = []
