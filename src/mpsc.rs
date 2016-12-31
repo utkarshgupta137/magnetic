@@ -9,9 +9,9 @@
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use super::{Consumer, Producer, TryPushError, TryPopError};
+use super::{Consumer, Producer, PushError, TryPushError, PopError, TryPopError};
 use super::buffer::Buffer;
 use util::{pause, buf_read, buf_write};
 
@@ -23,6 +23,7 @@ struct MPSCQueue<T, B: Buffer<T>> {
     tail: AtomicUsize,
     _pad2: [u8; 56],
     buf: B,
+    ok: AtomicBool,
     _marker: PhantomData<T>
 }
 
@@ -54,8 +55,8 @@ unsafe impl<T, B: Buffer<T>> Sync for MPSCProducer<T, B> {}
 ///
 /// let (p, c) = mpsc_queue(DynamicBuffer::new(32).unwrap());
 ///
-/// p.push(1);
-/// assert_eq!(c.pop(), 1);
+/// p.push(1).unwrap();
+/// assert_eq!(c.pop(), Ok(1));
 /// ```
 pub fn mpsc_queue<T, B: Buffer<T>>(buf: B)
         -> (MPSCProducer<T, B>, MPSCConsumer<T, B>) {
@@ -66,6 +67,7 @@ pub fn mpsc_queue<T, B: Buffer<T>>(buf: B)
         tail: AtomicUsize::new(0),
         _pad2: [0; 56],
         buf: buf,
+        ok: AtomicBool::new(true),
         _marker: PhantomData
     };
 
@@ -88,16 +90,22 @@ impl<T, B: Buffer<T>> Drop for MPSCQueue<T, B> {
 }
 
 impl<T, B: Buffer<T>> Producer<T> for MPSCProducer<T, B> {
-    fn push(&self, value: T) {
+    fn push(&self, value: T) -> Result<(), PushError<T>> {
         let q = unsafe { &mut *self.queue.get() };
 
         let head = q.next_head.fetch_add(1, Ordering::Relaxed);
-        while q.tail.load(Ordering::Acquire) + q.buf.size() <= head { pause(); }
+        while q.tail.load(Ordering::Acquire) + q.buf.size() <= head {
+            if !q.ok.load(Ordering::Relaxed) {
+                return Err(PushError::Disconnected(value));
+            }
+            pause();
+        }
 
         buf_write(&mut q.buf, head, value);
 
         while q.head.load(Ordering::Relaxed) < head { pause(); }
         q.head.store(head + 1, Ordering::Release);
+        Ok(())
     }
 
     fn try_push(&self, value: T) -> Result<(), TryPushError<T>> {
@@ -106,7 +114,11 @@ impl<T, B: Buffer<T>> Producer<T> for MPSCProducer<T, B> {
         let head = q.head.load(Ordering::Relaxed);
 
         if q.tail.load(Ordering::Relaxed) + q.buf.size() <= head {
-            Err(TryPushError::Full(value))
+            if q.ok.load(Ordering::Relaxed) {
+                return Err(TryPushError::Full(value))
+            } else {
+                return Err(TryPushError::Disconnected(value));
+            }
         } else {
             let next = head + 1;
             if q.next_head.compare_and_swap(head, next, Ordering::Acquire) == head {
@@ -114,24 +126,33 @@ impl<T, B: Buffer<T>> Producer<T> for MPSCProducer<T, B> {
                 q.head.store(next, Ordering::Release);
                 Ok(())
             } else {
-                Err(TryPushError::Full(value))
+                if q.ok.load(Ordering::Relaxed) {
+                    return Err(TryPushError::Full(value))
+                } else {
+                    return Err(TryPushError::Disconnected(value));
+                }
             }
         }
     }
 }
 
 impl<T, B: Buffer<T>> Consumer<T> for MPSCConsumer<T, B> {
-    fn pop(&self) -> T {
+    fn pop(&self) -> Result<T, PopError> {
         let q = unsafe { &mut *self.queue.get() };
 
         let tail = q.tail.load(Ordering::Relaxed);
         let tail_plus_one = tail + 1;
-        while tail_plus_one > q.head.load(Ordering::Acquire) { pause(); }
+        while tail_plus_one > q.head.load(Ordering::Acquire) {
+            if !q.ok.load(Ordering::Relaxed) {
+                return Err(PopError::Disconnected);
+            }
+            pause();
+        }
 
         let v = buf_read(&q.buf, tail);
 
         q.tail.store(tail_plus_one, Ordering::Release);
-        v
+        Ok(v)
     }
 
     fn try_pop(&self) -> Result<T, TryPopError> {
@@ -140,7 +161,11 @@ impl<T, B: Buffer<T>> Consumer<T> for MPSCConsumer<T, B> {
         let tail_plus_one = tail + 1;
 
         if tail_plus_one > q.head.load(Ordering::Acquire) {
-            Err(TryPopError::Empty)
+            if q.ok.load(Ordering::Relaxed) {
+                Err(TryPopError::Empty)
+            } else {
+                Err(TryPopError::Disconnected)
+            }
         } else {
             let v = buf_read(&q.buf, tail);
             q.tail.store(tail_plus_one, Ordering::Release);
@@ -149,12 +174,24 @@ impl<T, B: Buffer<T>> Consumer<T> for MPSCConsumer<T, B> {
     }
 }
 
+impl<T, B: Buffer<T>> Drop for MPSCProducer<T, B> {
+    fn drop(&mut self) {
+        let q = unsafe { &mut *self.queue.get() };
+        q.ok.store(false, Ordering::Relaxed);
+    }
+}
+
+impl<T, B: Buffer<T>> Drop for MPSCConsumer<T, B> {
+    fn drop(&mut self) {
+        let q = unsafe { &mut *self.queue.get() };
+        q.ok.store(false, Ordering::Relaxed);
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::sync::Arc;
     use std::thread::spawn;
-
-    use test::Bencher;
 
     use super::*;
     use super::super::{Consumer, Producer, TryPushError, TryPopError};
@@ -164,12 +201,12 @@ mod test {
     fn one_thread() {
         let (p, c) = mpsc_queue(DynamicBuffer::new(2).unwrap());
 
-        p.push(1);
-        p.push(2);
+        p.push(1).unwrap();
+        p.push(2).unwrap();
         assert_eq!(p.try_push(3), Err(TryPushError::Full(3)));
-        assert_eq!(c.pop(), 1);
+        assert_eq!(c.pop(), Ok(1));
         assert_eq!(p.try_push(4), Ok(()));
-        assert_eq!(c.pop(), 2);
+        assert_eq!(c.pop(), Ok(2));
         assert_eq!(c.try_pop(), Ok(4));
         assert_eq!(c.try_pop(), Err(TryPopError::Empty));
     }
@@ -178,18 +215,24 @@ mod test {
     fn two_thread_seq() {
         let (p, c) = mpsc_queue(DynamicBuffer::new(3).unwrap());
 
-        spawn(move || {
-            p.push(vec![1; 5]);
-            p.push(vec![2; 7]);
-            p.push(vec![3; 3]);
+        let p = spawn(move || {
+            p.push(vec![1; 5]).unwrap();
+            p.push(vec![2; 7]).unwrap();
+            p.push(vec![3; 3]).unwrap();
+            p
         }).join().unwrap();
 
-        spawn(move || {
-            assert_eq!(c.pop(), vec![1; 5]);
-            assert_eq!(c.pop(), vec![2; 7]);
-            assert_eq!(c.pop(), vec![3; 3]);
+        let c = spawn(move || {
+            assert_eq!(c.pop(), Ok(vec![1; 5]));
+            assert_eq!(c.pop(), Ok(vec![2; 7]));
+            assert_eq!(c.pop(), Ok(vec![3; 3]));
             assert_eq!(c.try_pop(), Err(TryPopError::Empty));
+            c
         }).join().unwrap();
+
+        drop(p);
+
+        assert_eq!(c.try_pop(), Err(TryPopError::Disconnected));
     }
 
     #[test]
@@ -205,14 +248,14 @@ mod test {
             let p = p2.clone();
             producers.push(spawn(move || {
                 for i in 0..count {
-                    p.push(i);
+                    p.push(i).unwrap();
                 }
             }));
         }
 
         let total = count * producers.len() as u64;
         let t2 = spawn(move || {
-            (0..total).fold(0u64, |a, _| a + c.pop())
+            (0..total).fold(0u64, |a, _| a + c.pop().unwrap())
         });
 
         for t in producers.into_iter() {
@@ -222,6 +265,17 @@ mod test {
         let sum = t2.join().unwrap();
         assert_eq!(sum, (count-1) * ((count-1) + 1) * 3 / 2);
     }
+}
+
+#[cfg(all(feature = "unstable", test))]
+mod bench {
+    use std::thread::spawn;
+
+    use test::Bencher;
+
+    use super::*;
+    use super::super::{Consumer, Producer};
+    use super::super::buffer::dynamic::DynamicBuffer;
 
     #[bench]
     fn ping_pong(b: &mut Bencher) {
@@ -230,21 +284,22 @@ mod test {
 
         let pong = spawn(move || {
             loop {
-                let n = c1.pop();
-                p2.push(n);
+                let n = c1.pop().unwrap();
+                p2.push(n).unwrap();
                 if n == 0 {
                     break
                 }
             }
+            (c1, p2)
         });
 
         b.iter(|| {
-            p1.push(1234);
-            c2.pop();
+            p1.push(1234).unwrap();
+            c2.pop().unwrap();
         });
 
-        p1.push(0);
-        c2.pop();
+        p1.push(0).unwrap();
+        c2.pop().unwrap();
         pong.join().unwrap();
     }
 
@@ -265,6 +320,7 @@ mod test {
                     Err(_) => {}
                 }
             }
+            (c1, p2)
         });
 
         b.iter(|| {
@@ -272,8 +328,8 @@ mod test {
             while let Err(_) = c2.try_pop() {};
         });
 
-        p1.push(0);
-        c2.pop();
+        p1.push(0).unwrap();
+        c2.pop().unwrap();
         pong.join().unwrap();
     }
 }

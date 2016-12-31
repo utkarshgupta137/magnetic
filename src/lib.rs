@@ -12,21 +12,22 @@
 //! let (p, c) = spsc_queue(DynamicBuffer::new(32).unwrap());
 //!
 //! // Push and pop within a single thread
-//! p.push(1);
-//! assert_eq!(c.pop(), 1);
+//! p.push(1).unwrap();
+//! assert_eq!(c.pop(), Ok(1));
 //!
 //! // Push and pop from multiple threads. Since this example is using the
 //! // SPSC queue, only one producer and one consumer are allowed.
 //! let t1 = spawn(move || {
 //!     for i in 0..10 {
 //!         println!("Producing {}", i);
-//!         p.push(i);
+//!         p.push(i).unwrap();
 //!     }
+//!     p
 //! });
 //!
 //! let t2 = spawn(move || {
 //!     loop {
-//!         let i = c.pop();
+//!         let i = c.pop().unwrap();
 //!         println!("Consumed {}", i);
 //!         if i == 9 { break; }
 //!     }
@@ -36,10 +37,13 @@
 //! t2.join().unwrap();
 //! ```
 
-#![feature(asm)]
-#![feature(test)]
+// Not available on stable. Used for the pause instruction on x86_64
+//#![feature(asm)]
 #![deny(missing_docs)]
 
+#![cfg_attr(test, feature(test))]
+
+#[cfg(feature = "unstable")]
 extern crate test;
 
 pub mod buffer;
@@ -49,11 +53,27 @@ pub mod spmc;
 pub mod mpmc;
 mod util;
 
-/// Possible errors for `Producter::try_push`
+/// Possible errors for `Producer::push`
+#[derive(Debug, PartialEq)]
+pub enum PushError<T> {
+    /// Consumer was destroyed
+    Disconnected(T),
+}
+
+/// Possible errors for `Producer::try_push`
 #[derive(Debug, PartialEq)]
 pub enum TryPushError<T> {
     /// Queue was full
     Full(T),
+    /// Consumer was destroyed
+    Disconnected(T),
+}
+
+/// Possible errors for `Consumer::pop`
+#[derive(Debug, PartialEq)]
+pub enum PopError {
+    /// Producer was destroyed
+    Disconnected,
 }
 
 /// Possible errors for `Consumer::try_pop`
@@ -61,6 +81,8 @@ pub enum TryPushError<T> {
 pub enum TryPopError {
     /// Queue was empty
     Empty,
+    /// Producer was destroyed
+    Disconnected,
 }
 
 /// The consumer end of the queue allows for sending data. `Producer<T>` is
@@ -68,7 +90,7 @@ pub enum TryPopError {
 pub trait Producer<T> {
     /// Add value to front of the queue. This method will block if the queue
     /// is currently full.
-    fn push(&self, value: T);
+    fn push(&self, value: T) -> Result<(), PushError<T>>;
 
     /// Attempt to add a value to the front of the queue. If the value was
     /// added successfully, `None` will be returned. If unsuccessful, `value`
@@ -82,7 +104,7 @@ pub trait Producer<T> {
 pub trait Consumer<T> {
     /// Remove value from the end of the queue. This method will block if the
     /// queue is currently empty.
-    fn pop(&self) -> T;
+    fn pop(&self) -> Result<T, PopError>;
 
     /// Attempt to remove a value from the end of the queue. If the value was
     /// removed successfully, `Some(T)` will be returned. If unsuccessful,

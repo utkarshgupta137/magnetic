@@ -6,7 +6,8 @@ use super::buffer::Buffer;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[inline(always)]
 pub fn pause() {
-    unsafe { asm!("PAUSE") };
+    // Requires feature(asm) which is not yet available on stable.
+    //unsafe { asm!("PAUSE") };
 }
 
 #[cfg(all(not(target_arch = "x86"), not(target_arch = "x86_64")))]
