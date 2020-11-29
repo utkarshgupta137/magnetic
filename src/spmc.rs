@@ -34,16 +34,16 @@ pub struct SPMCConsumer<T, B: Buffer<T>> {
     queue: Arc<UnsafeCell<SPMCQueue<T, B>>>,
 }
 
-unsafe impl<T, B: Buffer<T>> Send for SPMCConsumer<T, B> {}
-unsafe impl<T, B: Buffer<T>> Sync for SPMCConsumer<T, B> {}
+unsafe impl<T: Send, B: Buffer<T>> Send for SPMCConsumer<T, B> {}
+unsafe impl<T: Send, B: Buffer<T>> Sync for SPMCConsumer<T, B> {}
 
 /// Producer end of the queue. Implements the trait `Producer<T>`.
 pub struct SPMCProducer<T, B: Buffer<T>> {
     queue: Arc<UnsafeCell<SPMCQueue<T, B>>>,
 }
 
-unsafe impl<T, B: Buffer<T>> Send for SPMCProducer<T, B> {}
-unsafe impl<T, B: Buffer<T>> Sync for SPMCProducer<T, B> {}
+unsafe impl<T: Send, B: Buffer<T>> Send for SPMCProducer<T, B> {}
+unsafe impl<T: Send, B: Buffer<T>> Sync for SPMCProducer<T, B> {}
 
 /// Creates a new SPMC queue
 ///

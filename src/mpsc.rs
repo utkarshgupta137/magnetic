@@ -34,15 +34,15 @@ pub struct MPSCConsumer<T, B: Buffer<T>> {
     queue: Arc<UnsafeCell<MPSCQueue<T, B>>>,
 }
 
-unsafe impl<T, B: Buffer<T>> Send for MPSCConsumer<T, B> {}
+unsafe impl<T: Send, B: Buffer<T>> Send for MPSCConsumer<T, B> {}
 
 /// Producer end of the queue. Implements the trait `Producer<T>`.
 pub struct MPSCProducer<T, B: Buffer<T>> {
     queue: Arc<UnsafeCell<MPSCQueue<T, B>>>,
 }
 
-unsafe impl<T, B: Buffer<T>> Send for MPSCProducer<T, B> {}
-unsafe impl<T, B: Buffer<T>> Sync for MPSCProducer<T, B> {}
+unsafe impl<T: Send, B: Buffer<T>> Send for MPSCProducer<T, B> {}
+unsafe impl<T: Send, B: Buffer<T>> Sync for MPSCProducer<T, B> {}
 
 /// Creates a new MPSC queue
 ///
