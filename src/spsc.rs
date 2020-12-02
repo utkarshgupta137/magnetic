@@ -32,14 +32,14 @@ pub struct SPSCConsumer<T, B: Buffer<T>> {
     queue: Arc<UnsafeCell<SPSCQueue<T, B>>>,
 }
 
-unsafe impl<T, B: Buffer<T>> Send for SPSCConsumer<T, B> {}
+unsafe impl<T: Send, B: Buffer<T>> Send for SPSCConsumer<T, B> {}
 
 /// Producer end of the queue. Implements the trait `Producer<T>`.
 pub struct SPSCProducer<T, B: Buffer<T>> {
     queue: Arc<UnsafeCell<SPSCQueue<T, B>>>,
 }
 
-unsafe impl<T, B: Buffer<T>> Send for SPSCProducer<T, B> {}
+unsafe impl<T: Send, B: Buffer<T>> Send for SPSCProducer<T, B> {}
 
 /// Creates a new SPSC queue
 ///
