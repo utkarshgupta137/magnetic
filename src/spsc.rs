@@ -10,16 +10,15 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use crossbeam_utils::CachePadded;
+
 use super::{Consumer, Producer, PushError, TryPushError, PopError, TryPopError};
 use super::buffer::Buffer;
-use util::{pause, buf_read, buf_write};
+use crate::util::{pause, buf_read, buf_write};
 
-//#[repr(C)]
 struct SPSCQueue<T, B: Buffer<T>> {
-    head: AtomicUsize,
-    _pad1: [u8; 56],
-    tail: AtomicUsize,
-    _pad2: [u8; 56],
+    head: CachePadded<AtomicUsize>,
+    tail: CachePadded<AtomicUsize>,
     buf: B,
     ok: AtomicBool,
     _marker: PhantomData<T>
@@ -58,10 +57,8 @@ unsafe impl<T: Send, B: Buffer<T>> Send for SPSCProducer<T, B> {}
 pub fn spsc_queue<T, B: Buffer<T>>(buf: B)
         -> (SPSCProducer<T, B>, SPSCConsumer<T, B>) {
     let queue = SPSCQueue {
-        head: AtomicUsize::new(0),
-        _pad1: [0; 56],
-        tail: AtomicUsize::new(0),
-        _pad2: [0; 56],
+        head: CachePadded::new(AtomicUsize::new(0)),
+        tail: CachePadded::new(AtomicUsize::new(0)),
         buf: buf,
         ok: AtomicBool::new(true),
         _marker: PhantomData

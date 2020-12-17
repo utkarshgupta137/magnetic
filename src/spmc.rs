@@ -11,17 +11,15 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use crossbeam_utils::CachePadded;
+
 use super::{Consumer, Producer, PushError, TryPushError, PopError, TryPopError};
 use super::buffer::Buffer;
-use util::{pause, buf_read, buf_write};
+use crate::util::{pause, buf_read, buf_write, AtomicPair};
 
-//#[repr(C)]
 struct SPMCQueue<T, B: Buffer<T>> {
-    head: AtomicUsize,
-    _pad1: [u8; 56],
-    tail: AtomicUsize,
-    next_tail: AtomicUsize,
-    _pad2: [u8; 48],
+    head: CachePadded<AtomicUsize>,
+    tail: CachePadded<AtomicPair>,
     buf: B,
     ok: AtomicBool,
     _marker: PhantomData<T>
@@ -62,11 +60,8 @@ unsafe impl<T: Send, B: Buffer<T>> Sync for SPMCProducer<T, B> {}
 pub fn spmc_queue<T, B: Buffer<T>>(buf: B)
         -> (SPMCProducer<T, B>, SPMCConsumer<T, B>) {
     let queue = SPMCQueue {
-        head: AtomicUsize::new(0),
-        _pad1: [0; 56],
-        tail: AtomicUsize::new(0),
-        next_tail: AtomicUsize::new(0),
-        _pad2: [0; 48],
+        head: CachePadded::new(AtomicUsize::new(0)),
+        tail: CachePadded::new(AtomicPair::default()),
         buf: buf,
         ok: AtomicBool::new(true),
         _marker: PhantomData
@@ -83,7 +78,7 @@ pub fn spmc_queue<T, B: Buffer<T>>(buf: B)
 impl<T, B: Buffer<T>> Drop for SPMCQueue<T, B> {
     fn drop(&mut self) {
         let head = self.head.load(Ordering::Relaxed);
-        let tail = self.tail.load(Ordering::Relaxed);
+        let tail = self.tail.curr.load(Ordering::Relaxed);
         for pos in tail..head {
             buf_read(&self.buf, pos);
         }
@@ -95,7 +90,7 @@ impl<T, B: Buffer<T>> Producer<T> for SPMCProducer<T, B> {
         let q = unsafe { &mut *self.queue.get() };
         let head = q.head.load(Ordering::Relaxed);
 
-        while q.tail.load(Ordering::Acquire) + q.buf.size() <= head {
+        while q.tail.curr.load(Ordering::Acquire) + q.buf.size() <= head {
             if !q.ok.load(Ordering::Relaxed) {
                 return Err(PushError::Disconnected(value));
             }
@@ -110,7 +105,7 @@ impl<T, B: Buffer<T>> Producer<T> for SPMCProducer<T, B> {
     fn try_push(&self, value: T) -> Result<(), TryPushError<T>> {
         let q = unsafe { &mut *self.queue.get() };
         let head = q.head.load(Ordering::Relaxed);
-        if q.tail.load(Ordering::Acquire) + q.buf.size() <= head {
+        if q.tail.curr.load(Ordering::Acquire) + q.buf.size() <= head {
             if q.ok.load(Ordering::Relaxed) {
                 return Err(TryPushError::Full(value))
             } else {
@@ -128,7 +123,7 @@ impl<T, B: Buffer<T>> Consumer<T> for SPMCConsumer<T, B> {
     fn pop(&self) -> Result<T, PopError> {
         let q = unsafe { &mut *self.queue.get() };
 
-        let tail = q.next_tail.fetch_add(1, Ordering::Relaxed);
+        let tail = q.tail.next.fetch_add(1, Ordering::Relaxed);
         let tail_plus_one = tail + 1;
         while tail_plus_one > q.head.load(Ordering::Acquire) {
             if !q.ok.load(Ordering::Relaxed) {
@@ -139,14 +134,14 @@ impl<T, B: Buffer<T>> Consumer<T> for SPMCConsumer<T, B> {
 
         let v = buf_read(&q.buf, tail);
 
-        while q.tail.load(Ordering::Relaxed) < tail { pause(); }
-        q.tail.store(tail_plus_one, Ordering::Release);
+        while q.tail.curr.load(Ordering::Relaxed) < tail { pause(); }
+        q.tail.curr.store(tail_plus_one, Ordering::Release);
         Ok(v)
     }
 
     fn try_pop(&self) -> Result<T, TryPopError> {
         let q = unsafe { &mut *self.queue.get() };
-        let tail = q.tail.load(Ordering::Relaxed);
+        let tail = q.tail.curr.load(Ordering::Relaxed);
         let tail_plus_one = tail + 1;
 
         if tail_plus_one > q.head.load(Ordering::Relaxed) {
@@ -156,9 +151,9 @@ impl<T, B: Buffer<T>> Consumer<T> for SPMCConsumer<T, B> {
                 Err(TryPopError::Disconnected)
             }
         } else {
-            if q.next_tail.compare_and_swap(tail, tail_plus_one, Ordering::Acquire) == tail {
+            if q.tail.next.compare_and_swap(tail, tail_plus_one, Ordering::Acquire) == tail {
                 let v = buf_read(&q.buf, tail);
-                q.tail.store(tail_plus_one, Ordering::Release);
+                q.tail.curr.store(tail_plus_one, Ordering::Release);
                 Ok(v)
             } else {
                 if q.ok.load(Ordering::Relaxed) {
@@ -234,6 +229,12 @@ mod test {
 
     #[test]
     fn four_thread_par() {
+        if num_cpus::get() < 4 {
+            // Test will not finish in time
+            eprintln!("skipping four thread test due to cpu resource constraints");
+            return;
+        }
+
         let (p, c) = spmc_queue(DynamicBuffer::new(32).unwrap());
 
         let count = 10_000_000;

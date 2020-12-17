@@ -1,7 +1,7 @@
 //! Buffer which is allocated at run time
 
 use super::Buffer;
-use util::{alloc, dealloc};
+use crate::util::{alloc, dealloc};
 
 /// Holds data allocated from the heap at run time
 pub struct DynamicBuffer<T> {

@@ -1,5 +1,6 @@
 use std::mem;
 use std::ptr;
+use std::sync::atomic::AtomicUsize;
 
 use super::buffer::Buffer;
 
@@ -40,4 +41,10 @@ pub fn buf_write<T, B: Buffer<T>>(buf: &mut B, head: usize, value: T) {
 #[inline(always)]
 pub fn buf_read<T, B: Buffer<T>>(buf: &B, tail: usize) -> T {
     unsafe { ptr::read(buf.at(tail)) }
+}
+
+#[derive(Default)]
+pub struct AtomicPair {
+    pub curr: AtomicUsize,
+    pub next: AtomicUsize
 }
