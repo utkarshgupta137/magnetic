@@ -89,9 +89,11 @@ impl<T, B: Buffer<T>> Producer<T> for MPMCProducer<T, B> {
         let q = unsafe { &mut *self.queue.get() };
 
         let head = q.head.next.fetch_add(1, Ordering::Relaxed);
-        while q.tail.curr.load(Ordering::Acquire) + q.buf.size() <= head {
-            if !q.ok.load(Ordering::Relaxed) {
+        loop {
+            if !q.ok.load(Ordering::Acquire) {
                 return Err(PushError::Disconnected(value));
+            } else if q.tail.curr.load(Ordering::Acquire) + q.buf.size() > head {
+                break;
             }
             pause();
         }
@@ -105,26 +107,18 @@ impl<T, B: Buffer<T>> Producer<T> for MPMCProducer<T, B> {
 
     fn try_push(&self, value: T) -> Result<(), TryPushError<T>> {
         let q = unsafe { &mut *self.queue.get() };
-
-        let head = q.head.curr.load(Ordering::Relaxed);
-
-        if q.tail.curr.load(Ordering::Relaxed) + q.buf.size() <= head {
-            if q.ok.load(Ordering::Relaxed) {
-                return Err(TryPushError::Full(value))
-            } else {
+        loop {
+            let head = q.head.curr.load(Ordering::Relaxed);
+            if !q.ok.load(Ordering::Acquire) {
                 return Err(TryPushError::Disconnected(value));
-            }
-        } else {
-            let next = head + 1;
-            if q.head.next.compare_and_swap(head, next, Ordering::Acquire) == head {
-                buf_write(&mut q.buf, head, value);
-                q.head.curr.store(next, Ordering::Release);
-                Ok(())
+            } else if q.tail.curr.load(Ordering::Acquire) + q.buf.size() <= head {
+                return Err(TryPushError::Full(value));
             } else {
-                if q.ok.load(Ordering::Relaxed) {
-                    return Err(TryPushError::Full(value))
-                } else {
-                    return Err(TryPushError::Disconnected(value));
+                let next = head + 1;
+                if q.head.next.compare_and_swap(head, next, Ordering::Acquire) == head {
+                    buf_write(&mut q.buf, head, value);
+                    q.head.curr.store(next, Ordering::Release);
+                    return Ok(());
                 }
             }
         }
@@ -137,8 +131,11 @@ impl<T, B: Buffer<T>> Consumer<T> for MPMCConsumer<T, B> {
 
         let tail = q.tail.next.fetch_add(1, Ordering::Relaxed);
         let tail_plus_one = tail + 1;
-        while tail_plus_one > q.head.curr.load(Ordering::Acquire) {
-            if !q.ok.load(Ordering::Relaxed) {
+        loop {
+            let ok = q.ok.load(Ordering::Acquire);
+            if tail_plus_one <= q.head.curr.load(Ordering::Acquire) {
+                break;
+            } else if !ok {
                 return Err(PopError::Disconnected);
             }
             pause();
@@ -153,26 +150,20 @@ impl<T, B: Buffer<T>> Consumer<T> for MPMCConsumer<T, B> {
 
     fn try_pop(&self) -> Result<T, TryPopError> {
         let q = unsafe { &mut *self.queue.get() };
-        let tail = q.tail.curr.load(Ordering::Relaxed);
-        let tail_plus_one = tail + 1;
-
-        if tail_plus_one > q.head.curr.load(Ordering::Relaxed) {
-            if q.ok.load(Ordering::Relaxed) {
-                Err(TryPopError::Empty)
-            } else {
-                Err(TryPopError::Disconnected)
-            }
-        } else {
-            if q.tail.next.compare_and_swap(tail, tail_plus_one, Ordering::Acquire) == tail {
+        loop {
+            let tail = q.tail.curr.load(Ordering::Relaxed);
+            let tail_plus_one = tail + 1;
+            let ok = q.ok.load(Ordering::Acquire);
+            if tail_plus_one > q.head.curr.load(Ordering::Acquire) {
+                if ok {
+                    return Err(TryPopError::Empty);
+                } else {
+                    return Err(TryPopError::Disconnected);
+                }
+            } else if q.tail.next.compare_and_swap(tail, tail_plus_one, Ordering::Acquire) == tail {
                 let v = buf_read(&q.buf, tail);
                 q.tail.curr.store(tail_plus_one, Ordering::Release);
-                Ok(v)
-            } else {
-                if q.ok.load(Ordering::Relaxed) {
-                    Err(TryPopError::Empty)
-                } else {
-                    Err(TryPopError::Disconnected)
-                }
+                return Ok(v);
             }
         }
     }
@@ -181,14 +172,14 @@ impl<T, B: Buffer<T>> Consumer<T> for MPMCConsumer<T, B> {
 impl<T, B: Buffer<T>> Drop for MPMCProducer<T, B> {
     fn drop(&mut self) {
         let q = unsafe { &mut *self.queue.get() };
-        q.ok.store(false, Ordering::Relaxed);
+        q.ok.store(false, Ordering::Release);
     }
 }
 
 impl<T, B: Buffer<T>> Drop for MPMCConsumer<T, B> {
     fn drop(&mut self) {
         let q = unsafe { &mut *self.queue.get() };
-        q.ok.store(false, Ordering::Relaxed);
+        q.ok.store(false, Ordering::Release);
     }
 }
 
@@ -280,6 +271,31 @@ mod test {
             .map(|t| t.join().unwrap())
             .fold(0u64, |a, b| a + b);
         assert_eq!(sum, (count-1) * ((count-1) + 1));
+    }
+
+    #[test]
+    fn disconnect() {
+        let (p, c) = mpmc_queue(DynamicBuffer::new(32).unwrap());
+        p.push(1).unwrap();
+        p.push(2).unwrap();
+        std::mem::drop(p);
+        assert_eq!(c.pop(), Ok(1));
+        assert_eq!(c.pop(), Ok(2));
+        assert_eq!(c.pop(), Err(PopError::Disconnected));
+        assert_eq!(c.try_pop(), Err(TryPopError::Disconnected));
+
+        let (p, c) = mpmc_queue(DynamicBuffer::new(32).unwrap());
+        p.push(1).unwrap();
+        std::mem::drop(c);
+        assert_eq!(p.push(2), Err(PushError::Disconnected(2)));
+        assert_eq!(p.try_push(2), Err(TryPushError::Disconnected(2)));
+
+        let (p, c) = mpmc_queue(DynamicBuffer::new(1).unwrap());
+        p.push(1).unwrap();
+        assert_eq!(p.try_push(2), Err(TryPushError::Full(2)));
+        std::mem::drop(c);
+        assert_eq!(p.push(2), Err(PushError::Disconnected(2)));
+        assert_eq!(p.try_push(2), Err(TryPushError::Disconnected(2)));
     }
 }
 

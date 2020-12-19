@@ -4,13 +4,16 @@ use std::sync::atomic::AtomicUsize;
 
 use super::buffer::Buffer;
 
-#[cfg(all(feature="unstable", any(target_arch = "x86", target_arch = "x86_64")))]
+#[cfg(all(feature = "unstable", any(target_arch = "x86", target_arch = "x86_64")))]
 #[inline(always)]
 pub fn pause() {
     unsafe { asm!("PAUSE") };
 }
 
-#[cfg(all(not(feature="unstable"), any(target_arch = "x86", target_arch = "x86_64")))]
+#[cfg(all(
+    not(feature = "unstable"),
+    any(target_arch = "x86", target_arch = "x86_64")
+))]
 #[inline(always)]
 pub fn pause() {
     // nop
@@ -30,7 +33,9 @@ pub fn alloc<T>(size: usize) -> *mut T {
 }
 
 pub fn dealloc<T>(ptr: *mut T, size: usize) {
-    unsafe { Vec::from_raw_parts(ptr, 0, size); }
+    unsafe {
+        Vec::from_raw_parts(ptr, 0, size);
+    }
 }
 
 #[inline(always)]
@@ -46,5 +51,5 @@ pub fn buf_read<T, B: Buffer<T>>(buf: &B, tail: usize) -> T {
 #[derive(Default)]
 pub struct AtomicPair {
     pub curr: AtomicUsize,
-    pub next: AtomicUsize
+    pub next: AtomicUsize,
 }

@@ -7,21 +7,21 @@
 
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use crossbeam_utils::CachePadded;
 
-use super::{Consumer, Producer, PushError, TryPushError, PopError, TryPopError};
 use super::buffer::Buffer;
-use crate::util::{pause, buf_read, buf_write};
+use super::{Consumer, PopError, Producer, PushError, TryPopError, TryPushError};
+use crate::util::{buf_read, buf_write, pause};
 
 struct SPSCQueue<T, B: Buffer<T>> {
     head: CachePadded<AtomicUsize>,
     tail: CachePadded<AtomicUsize>,
     buf: B,
     ok: AtomicBool,
-    _marker: PhantomData<T>
+    _marker: PhantomData<T>,
 }
 
 unsafe impl<T, B: Buffer<T>> Sync for SPSCQueue<T, B> {}
@@ -54,20 +54,21 @@ unsafe impl<T: Send, B: Buffer<T>> Send for SPSCProducer<T, B> {}
 /// p.push(1).unwrap();
 /// assert_eq!(c.pop(), Ok(1));
 /// ```
-pub fn spsc_queue<T, B: Buffer<T>>(buf: B)
-        -> (SPSCProducer<T, B>, SPSCConsumer<T, B>) {
+pub fn spsc_queue<T, B: Buffer<T>>(buf: B) -> (SPSCProducer<T, B>, SPSCConsumer<T, B>) {
     let queue = SPSCQueue {
         head: CachePadded::new(AtomicUsize::new(0)),
         tail: CachePadded::new(AtomicUsize::new(0)),
         buf: buf,
         ok: AtomicBool::new(true),
-        _marker: PhantomData
+        _marker: PhantomData,
     };
 
     let queue = Arc::new(UnsafeCell::new(queue));
 
     (
-        SPSCProducer { queue: queue.clone() },
+        SPSCProducer {
+            queue: queue.clone(),
+        },
         SPSCConsumer { queue: queue },
     )
 }
@@ -87,9 +88,11 @@ impl<T, B: Buffer<T>> Producer<T> for SPSCProducer<T, B> {
         let q = unsafe { &mut *self.queue.get() };
         let head = q.head.load(Ordering::Relaxed);
 
-        while q.tail.load(Ordering::Acquire) + q.buf.size() <= head {
-            if !q.ok.load(Ordering::Relaxed) {
+        loop {
+            if !q.ok.load(Ordering::Acquire) {
                 return Err(PushError::Disconnected(value));
+            } else if q.tail.load(Ordering::Acquire) + q.buf.size() > head {
+                break;
             }
             pause();
         }
@@ -102,12 +105,10 @@ impl<T, B: Buffer<T>> Producer<T> for SPSCProducer<T, B> {
     fn try_push(&self, value: T) -> Result<(), TryPushError<T>> {
         let q = unsafe { &mut *self.queue.get() };
         let head = q.head.load(Ordering::Relaxed);
-        if q.tail.load(Ordering::Acquire) + q.buf.size() <= head {
-            if q.ok.load(Ordering::Relaxed) {
-                return Err(TryPushError::Full(value))
-            } else {
-                return Err(TryPushError::Disconnected(value));
-            }
+        if !q.ok.load(Ordering::Acquire) {
+            Err(TryPushError::Disconnected(value))
+        } else if q.tail.load(Ordering::Acquire) + q.buf.size() <= head {
+            Err(TryPushError::Full(value))
         } else {
             buf_write(&mut q.buf, head, value);
             q.head.store(head + 1, Ordering::Release);
@@ -122,8 +123,11 @@ impl<T, B: Buffer<T>> Consumer<T> for SPSCConsumer<T, B> {
 
         let tail = q.tail.load(Ordering::Relaxed);
         let tail_plus_one = tail + 1;
-        while tail_plus_one > q.head.load(Ordering::Acquire) {
-            if !q.ok.load(Ordering::Relaxed) {
+        loop {
+            let ok = q.ok.load(Ordering::Acquire);
+            if tail_plus_one <= q.head.load(Ordering::Acquire) {
+                break;
+            } else if !ok {
                 return Err(PopError::Disconnected);
             }
             pause();
@@ -140,8 +144,9 @@ impl<T, B: Buffer<T>> Consumer<T> for SPSCConsumer<T, B> {
         let tail = q.tail.load(Ordering::Relaxed);
         let tail_plus_one = tail + 1;
 
+        let ok = q.ok.load(Ordering::Acquire);
         if tail_plus_one > q.head.load(Ordering::Acquire) {
-            if q.ok.load(Ordering::Relaxed) {
+            if ok {
                 Err(TryPopError::Empty)
             } else {
                 Err(TryPopError::Disconnected)
@@ -157,14 +162,14 @@ impl<T, B: Buffer<T>> Consumer<T> for SPSCConsumer<T, B> {
 impl<T, B: Buffer<T>> Drop for SPSCProducer<T, B> {
     fn drop(&mut self) {
         let q = unsafe { &mut *self.queue.get() };
-        q.ok.store(false, Ordering::Relaxed);
+        q.ok.store(false, Ordering::Release);
     }
 }
 
 impl<T, B: Buffer<T>> Drop for SPSCConsumer<T, B> {
     fn drop(&mut self) {
         let q = unsafe { &mut *self.queue.get() };
-        q.ok.store(false, Ordering::Relaxed);
+        q.ok.store(false, Ordering::Release);
     }
 }
 
@@ -172,9 +177,9 @@ impl<T, B: Buffer<T>> Drop for SPSCConsumer<T, B> {
 mod test {
     use std::thread::spawn;
 
-    use super::*;
-    use super::super::{Consumer, Producer, TryPushError, TryPopError};
     use super::super::buffer::dynamic::DynamicBuffer;
+    use super::super::{Consumer, Producer, TryPopError, TryPushError};
+    use super::*;
 
     #[test]
     fn one_thread() {
@@ -199,7 +204,9 @@ mod test {
             p.push(vec![2; 7]).unwrap();
             p.push(vec![3; 3]).unwrap();
             p
-        }).join().unwrap();
+        })
+        .join()
+        .unwrap();
 
         let c = spawn(move || {
             assert_eq!(c.pop(), Ok(vec![1; 5]));
@@ -207,7 +214,9 @@ mod test {
             assert_eq!(c.pop(), Ok(vec![3; 3]));
             assert_eq!(c.try_pop(), Err(TryPopError::Empty));
             c
-        }).join().unwrap();
+        })
+        .join()
+        .unwrap();
 
         drop(p);
 
@@ -235,6 +244,31 @@ mod test {
         t1.join().unwrap();
         t2.join().unwrap();
     }
+
+    #[test]
+    fn disconnect() {
+        let (p, c) = spsc_queue(DynamicBuffer::new(3).unwrap());
+        p.push(1).unwrap();
+        p.push(2).unwrap();
+        std::mem::drop(p);
+        assert_eq!(c.pop(), Ok(1));
+        assert_eq!(c.pop(), Ok(2));
+        assert_eq!(c.pop(), Err(PopError::Disconnected));
+        assert_eq!(c.try_pop(), Err(TryPopError::Disconnected));
+
+        let (p, c) = spsc_queue(DynamicBuffer::new(3).unwrap());
+        p.push(1).unwrap();
+        std::mem::drop(c);
+        assert_eq!(p.push(2), Err(PushError::Disconnected(2)));
+        assert_eq!(p.try_push(2), Err(TryPushError::Disconnected(2)));
+
+        let (p, c) = spsc_queue(DynamicBuffer::new(1).unwrap());
+        p.push(1).unwrap();
+        assert_eq!(p.try_push(2), Err(TryPushError::Full(2)));
+        std::mem::drop(c);
+        assert_eq!(p.push(2), Err(PushError::Disconnected(2)));
+        assert_eq!(p.try_push(2), Err(TryPushError::Disconnected(2)));
+    }
 }
 
 #[cfg(all(feature = "unstable", test))]
@@ -243,9 +277,9 @@ mod bench {
 
     use test::Bencher;
 
-    use super::*;
-    use super::super::{Consumer, Producer};
     use super::super::buffer::dynamic::DynamicBuffer;
+    use super::super::{Consumer, Producer};
+    use super::*;
 
     #[bench]
     fn ping_pong(b: &mut Bencher) {
@@ -257,7 +291,7 @@ mod bench {
                 let n = c1.pop().unwrap();
                 p2.push(n).unwrap();
                 if n == 0 {
-                    break
+                    break;
                 }
             }
             (c1, p2)
@@ -284,9 +318,9 @@ mod bench {
                     Ok(n) => {
                         while let Err(_) = p2.try_push(n) {}
                         if n == 0 {
-                            break
+                            break;
                         }
-                    },
+                    }
                     Err(_) => {}
                 }
             }
@@ -294,8 +328,8 @@ mod bench {
         });
 
         b.iter(|| {
-            while let Err(_) = p1.try_push(1234) {};
-            while let Err(_) = c2.try_pop() {};
+            while let Err(_) = p1.try_push(1234) {}
+            while let Err(_) = c2.try_pop() {}
         });
 
         p1.push(0).unwrap();
