@@ -17,3 +17,20 @@ crossbeam-utils = "0.8"
 
 [dev-dependencies]
 num_cpus = "1"
+criterion = "0.3"
+
+[[bench]]
+name = "spsc"
+harness = false
+
+[[bench]]
+name = "spmc"
+harness = false
+
+[[bench]]
+name = "mpsc"
+harness = false
+
+[[bench]]
+name = "mpmc"
+harness = false
