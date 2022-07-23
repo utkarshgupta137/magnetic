@@ -1,11 +1,14 @@
 [package]
 authors = ["John Shaw <jshaw@shawnation.com>"]
+categories = ["concurrency", "data-structures"]
 description = "Low-latency lock-free queues"
-documentation = "http://johnshaw.github.io/magnetic/doc/magnetic"
+documentation = "https://docs.rs/magnetic"
 edition = "2021"
-keywords = ["lock-free", "queue"]
+homepage = "https://github.com/johnshaw/magnetic"
+keywords = ["lock-free", "queue", "fifo"]
 license = "MIT"
 name = "magnetic"
+readme = "README.md"
 repository = "https://github.com/johnshaw/magnetic"
 version = "2.3.0"
 
