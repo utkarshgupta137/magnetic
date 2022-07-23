@@ -6,6 +6,7 @@
 //! `!Sync`.
 
 use std::cell::UnsafeCell;
+use std::hint::spin_loop;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -14,7 +15,7 @@ use crossbeam_utils::CachePadded;
 
 use super::buffer::Buffer;
 use super::{Consumer, PopError, Producer, PushError, TryPopError, TryPushError};
-use crate::util::{buf_read, buf_write, pause};
+use crate::util::{buf_read, buf_write};
 
 struct SPSCQueue<T, B: Buffer<T>> {
     head: CachePadded<AtomicUsize>,
@@ -94,7 +95,7 @@ impl<T, B: Buffer<T>> Producer<T> for SPSCProducer<T, B> {
             } else if q.tail.load(Ordering::Acquire) + q.buf.size() > head {
                 break;
             }
-            pause();
+            spin_loop();
         }
 
         buf_write(&mut q.buf, head, value);
@@ -130,7 +131,7 @@ impl<T, B: Buffer<T>> Consumer<T> for SPSCConsumer<T, B> {
             } else if !ok {
                 return Err(PopError::Disconnected);
             }
-            pause();
+            spin_loop();
         }
 
         let v = buf_read(&q.buf, tail);
