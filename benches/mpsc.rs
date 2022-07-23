@@ -40,14 +40,11 @@ fn ping_pong_try(c: &mut Criterion) {
 
     let pong = spawn(move || {
         loop {
-            match c1.try_pop() {
-                Ok(n) => {
-                    while let Err(_) = p2.try_push(n) {}
-                    if n == 0 {
-                        break;
-                    }
+            if let Ok(n) = c1.try_pop() {
+                while p2.try_push(n).is_err() {}
+                if n == 0 {
+                    break;
                 }
-                Err(_) => {}
             }
         }
         (c1, p2)
@@ -55,8 +52,8 @@ fn ping_pong_try(c: &mut Criterion) {
 
     c.bench_function("mpsc::ping_pong_try", |b| {
         b.iter(|| {
-            while let Err(_) = p1.try_push(1234) {}
-            while let Err(_) = c2.try_pop() {}
+            while p1.try_push(1234).is_err() {}
+            while c2.try_pop().is_err() {}
         })
     });
 

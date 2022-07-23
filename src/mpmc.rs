@@ -60,7 +60,7 @@ pub fn mpmc_queue<T, B: Buffer<T>>(buf: B) -> (MPMCProducer<T, B>, MPMCConsumer<
     let queue = MPMCQueue {
         head: CachePadded::new(AtomicPair::default()),
         tail: CachePadded::new(AtomicPair::default()),
-        buf: buf,
+        buf,
         ok: AtomicBool::new(true),
         _marker: PhantomData,
     };
@@ -71,7 +71,7 @@ pub fn mpmc_queue<T, B: Buffer<T>>(buf: B) -> (MPMCProducer<T, B>, MPMCConsumer<
         MPMCProducer {
             queue: queue.clone(),
         },
-        MPMCConsumer { queue: queue },
+        MPMCConsumer { queue },
     )
 }
 
@@ -118,7 +118,11 @@ impl<T, B: Buffer<T>> Producer<T> for MPMCProducer<T, B> {
                 return Err(TryPushError::Full(value));
             } else {
                 let next = head + 1;
-                if q.head.next.compare_and_swap(head, next, Ordering::Acquire) == head {
+                if q.head
+                    .next
+                    .compare_exchange_weak(head, next, Ordering::Acquire, Ordering::Acquire)
+                    .is_ok()
+                {
                     buf_write(&mut q.buf, head, value);
                     q.head.curr.store(next, Ordering::Release);
                     return Ok(());
@@ -168,8 +172,8 @@ impl<T, B: Buffer<T>> Consumer<T> for MPMCConsumer<T, B> {
             } else if q
                 .tail
                 .next
-                .compare_and_swap(tail, tail_plus_one, Ordering::Acquire)
-                == tail
+                .compare_exchange_weak(tail, tail_plus_one, Ordering::Acquire, Ordering::Acquire)
+                .is_ok()
             {
                 let v = buf_read(&q.buf, tail);
                 q.tail.curr.store(tail_plus_one, Ordering::Release);
@@ -281,10 +285,7 @@ mod test {
             t.join().unwrap();
         }
 
-        let sum = consumers
-            .into_iter()
-            .map(|t| t.join().unwrap())
-            .fold(0u64, |a, b| a + b);
+        let sum: u64 = consumers.into_iter().map(|t| t.join().unwrap()).sum();
         assert_eq!(sum, (count - 1) * ((count - 1) + 1));
     }
 

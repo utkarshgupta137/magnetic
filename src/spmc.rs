@@ -61,7 +61,7 @@ pub fn spmc_queue<T, B: Buffer<T>>(buf: B) -> (SPMCProducer<T, B>, SPMCConsumer<
     let queue = SPMCQueue {
         head: CachePadded::new(AtomicUsize::new(0)),
         tail: CachePadded::new(AtomicPair::default()),
-        buf: buf,
+        buf,
         ok: AtomicBool::new(true),
         _marker: PhantomData,
     };
@@ -72,7 +72,7 @@ pub fn spmc_queue<T, B: Buffer<T>>(buf: B) -> (SPMCProducer<T, B>, SPMCConsumer<
         SPMCProducer {
             queue: queue.clone(),
         },
-        SPMCConsumer { queue: queue },
+        SPMCConsumer { queue },
     )
 }
 
@@ -160,8 +160,8 @@ impl<T, B: Buffer<T>> Consumer<T> for SPMCConsumer<T, B> {
             } else if q
                 .tail
                 .next
-                .compare_and_swap(tail, tail_plus_one, Ordering::Acquire)
-                == tail
+                .compare_exchange_weak(tail, tail_plus_one, Ordering::Acquire, Ordering::Acquire)
+                .is_ok()
             {
                 let v = buf_read(&q.buf, tail);
                 q.tail.curr.store(tail_plus_one, Ordering::Release);
@@ -265,10 +265,7 @@ mod test {
         }
 
         t1.join().unwrap();
-        let sum = consumers
-            .into_iter()
-            .map(|t| t.join().unwrap())
-            .fold(0u64, |a, b| a + b);
+        let sum: u64 = consumers.into_iter().map(|t| t.join().unwrap()).sum();
         assert_eq!(sum, ((total - 1) * ((total - 1) + 1)) / 2);
     }
 

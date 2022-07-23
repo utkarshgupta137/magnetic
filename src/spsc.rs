@@ -58,7 +58,7 @@ pub fn spsc_queue<T, B: Buffer<T>>(buf: B) -> (SPSCProducer<T, B>, SPSCConsumer<
     let queue = SPSCQueue {
         head: CachePadded::new(AtomicUsize::new(0)),
         tail: CachePadded::new(AtomicUsize::new(0)),
-        buf: buf,
+        buf,
         ok: AtomicBool::new(true),
         _marker: PhantomData,
     };
@@ -69,7 +69,7 @@ pub fn spsc_queue<T, B: Buffer<T>>(buf: B) -> (SPSCProducer<T, B>, SPSCConsumer<
         SPSCProducer {
             queue: queue.clone(),
         },
-        SPSCConsumer { queue: queue },
+        SPSCConsumer { queue },
     )
 }
 

@@ -60,7 +60,7 @@ pub fn mpsc_queue<T, B: Buffer<T>>(buf: B) -> (MPSCProducer<T, B>, MPSCConsumer<
     let queue = MPSCQueue {
         head: CachePadded::new(AtomicPair::default()),
         tail: CachePadded::new(AtomicUsize::new(0)),
-        buf: buf,
+        buf,
         ok: AtomicBool::new(true),
         _marker: PhantomData,
     };
@@ -71,7 +71,7 @@ pub fn mpsc_queue<T, B: Buffer<T>>(buf: B) -> (MPSCProducer<T, B>, MPSCConsumer<
         MPSCProducer {
             queue: queue.clone(),
         },
-        MPSCConsumer { queue: queue },
+        MPSCConsumer { queue },
     )
 }
 
@@ -118,7 +118,11 @@ impl<T, B: Buffer<T>> Producer<T> for MPSCProducer<T, B> {
                 return Err(TryPushError::Full(value));
             } else {
                 let next = head + 1;
-                if q.head.next.compare_and_swap(head, next, Ordering::Acquire) == head {
+                if q.head
+                    .next
+                    .compare_exchange_weak(head, next, Ordering::Acquire, Ordering::Acquire)
+                    .is_ok()
+                {
                     buf_write(&mut q.buf, head, value);
                     q.head.curr.store(next, Ordering::Release);
                     return Ok(());

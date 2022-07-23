@@ -15,7 +15,10 @@ impl<T> DynamicBuffer<T> {
     /// allocated.
     pub fn new(size: usize) -> Result<Self, &'static str> {
         if size > 0 {
-            Ok(DynamicBuffer{ptr: alloc(size), size: size})
+            Ok(DynamicBuffer {
+                ptr: alloc(size),
+                size,
+            })
         } else {
             Err("Buffer size must be greater than 0")
         }
@@ -39,12 +42,12 @@ impl<T> Buffer<T> for DynamicBuffer<T> {
     #[inline(always)]
     fn at(&self, idx: usize) -> *const T {
         let idx = idx % self.size;
-        unsafe { self.ptr.offset(idx as isize) }
+        unsafe { self.ptr.add(idx) }
     }
 
     fn at_mut(&mut self, idx: usize) -> *mut T {
         let idx = idx % self.size;
-        unsafe { self.ptr.offset(idx as isize) }
+        unsafe { self.ptr.add(idx) }
     }
 }
 
@@ -64,9 +67,11 @@ impl<T> DynamicBufferP2<T> {
     pub fn new(size: usize) -> Result<Self, &'static str> {
         match size {
             0 => Err("Buffer size must be greater than 0"),
-            _ if ((size - 1) & size) == 0 =>
-                Ok(DynamicBufferP2{ptr: alloc(size), mask: size - 1}),
-            _ => Err("Buffer size must be a power of two")
+            _ if ((size - 1) & size) == 0 => Ok(DynamicBufferP2 {
+                ptr: alloc(size),
+                mask: size - 1,
+            }),
+            _ => Err("Buffer size must be a power of two"),
         }
     }
 }
@@ -88,20 +93,20 @@ impl<T> Buffer<T> for DynamicBufferP2<T> {
     #[inline(always)]
     fn at(&self, idx: usize) -> *const T {
         let idx = idx & self.mask;
-        unsafe { self.ptr.offset(idx as isize) }
+        unsafe { self.ptr.add(idx) }
     }
 
     #[inline(always)]
     fn at_mut(&mut self, idx: usize) -> *mut T {
         let idx = idx & self.mask;
-        unsafe { self.ptr.offset(idx as isize) }
+        unsafe { self.ptr.add(idx) }
     }
 }
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use super::super::Buffer;
+    use super::*;
 
     #[test]
     fn bad_buf() {
@@ -125,8 +130,8 @@ mod test {
             assert_eq!(buf.at_mut(i), buf.at_mut(i));
             assert_eq!(buf.at(i), buf.at(size + i));
             assert_eq!(buf.at_mut(i), buf.at_mut(size + i));
-            assert!(buf.at(i) != buf.at(i+1));
-            assert!(buf.at_mut(i) != buf.at_mut(i+1));
+            assert!(buf.at(i) != buf.at(i + 1));
+            assert!(buf.at_mut(i) != buf.at_mut(i + 1));
         }
     }
 

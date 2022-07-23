@@ -1,13 +1,13 @@
 [package]
-name = "magnetic"
-description = "Low-latency lock-free queues"
-version = "2.2.0"
 authors = ["John Shaw <jshaw@shawnation.com>"]
-license = "MIT"
-repository = "https://github.com/johnshaw/magnetic"
-keywords = ["lock-free", "queue"]
+description = "Low-latency lock-free queues"
 documentation = "http://johnshaw.github.io/magnetic/doc/magnetic"
-edition = "2018"
+edition = "2021"
+keywords = ["lock-free", "queue"]
+license = "MIT"
+name = "magnetic"
+repository = "https://github.com/johnshaw/magnetic"
+version = "2.3.0"
 
 [features]
 unstable = []
@@ -16,21 +16,21 @@ unstable = []
 crossbeam-utils = "0.8"
 
 [dev-dependencies]
-num_cpus = "1"
 criterion = "0.3"
+num_cpus = "1"
 
 [[bench]]
+harness = false
 name = "spsc"
-harness = false
 
 [[bench]]
+harness = false
 name = "spmc"
-harness = false
 
 [[bench]]
+harness = false
 name = "mpsc"
-harness = false
 
 [[bench]]
-name = "mpmc"
 harness = false
+name = "mpmc"

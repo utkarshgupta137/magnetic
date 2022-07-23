@@ -1,4 +1,5 @@
 use std::thread::spawn;
+use std::time::Instant;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 
@@ -39,14 +40,11 @@ fn ping_pong_try(c: &mut Criterion) {
 
     let pong = spawn(move || {
         loop {
-            match c1.try_pop() {
-                Ok(n) => {
-                    while let Err(_) = p2.try_push(n) {}
-                    if n == 0 {
-                        break;
-                    }
+            if let Ok(n) = c1.try_pop() {
+                while p2.try_push(n).is_err() {}
+                if n == 0 {
+                    break;
                 }
-                Err(_) => {}
             }
         }
         (c1, p2)
@@ -54,8 +52,8 @@ fn ping_pong_try(c: &mut Criterion) {
 
     c.bench_function("spsc::ping_pong_try", |b| {
         b.iter(|| {
-            while let Err(_) = p1.try_push(1234) {}
-            while let Err(_) = c2.try_pop() {}
+            while p1.try_push(1234).is_err() {}
+            while c2.try_pop().is_err() {}
         })
     });
 
@@ -64,5 +62,66 @@ fn ping_pong_try(c: &mut Criterion) {
     pong.join().unwrap();
 }
 
-criterion_group!(benches, ping_pong, ping_pong_try);
+fn ops(c: &mut Criterion) {
+    let (p1, c1) = spsc_queue(DynamicBuffer::new(1024 * 1024 * 1024).unwrap());
+
+    c.bench_function("spsc uncontended push", |b| {
+        b.iter_custom(|iters| {
+            // Clear the queue
+            while c1.try_pop().is_ok() {}
+
+            let start = Instant::now();
+            for i in 0..iters {
+                p1.try_push(i).unwrap();
+            }
+            start.elapsed()
+        })
+    });
+
+    c.bench_function("spsc uncontended push (full)", |b| {
+        b.iter_custom(|iters| {
+            // Fill the queue
+            while p1.try_push(0).is_ok() {}
+
+            let start = Instant::now();
+            for i in 0..iters {
+                let _ = p1.try_push(i);
+            }
+            start.elapsed()
+        })
+    });
+
+    c.bench_function("spsc uncontended pop", |b| {
+        b.iter_custom(|iters| {
+            // Clear the queue
+            while c1.try_pop().is_ok() {}
+
+            // Fill the queue
+            for i in 0..iters {
+                p1.try_push(i).unwrap();
+            }
+
+            let start = Instant::now();
+            for _ in 0..iters {
+                c1.pop().unwrap();
+            }
+            start.elapsed()
+        })
+    });
+
+    c.bench_function("spsc uncontended pop (empty)", |b| {
+        b.iter_custom(|iters| {
+            // Clear the queue
+            while c1.try_pop().is_ok() {}
+
+            let start = Instant::now();
+            for _ in 0..iters {
+                let _ = c1.try_pop();
+            }
+            start.elapsed()
+        })
+    });
+}
+
+criterion_group!(benches, ping_pong, ping_pong_try, ops);
 criterion_main!(benches);
