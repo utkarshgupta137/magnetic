@@ -3,8 +3,8 @@
 //! The `Buffer` trait defined here allows the memory buffer of the queue to
 //! be defined independently from the queue implementation.
 
+pub mod array;
 pub mod dynamic;
-pub mod r#static;
 
 /// All buffers must implement this trait to be used with any of the queues.
 pub trait Buffer<T> {
