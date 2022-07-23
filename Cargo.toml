@@ -5,6 +5,7 @@ description = "Low-latency lock-free queues"
 documentation = "https://docs.rs/magnetic"
 edition = "2021"
 homepage = "https://github.com/johnshaw/magnetic"
+include = ["**/*.rs", "Cargo.toml", "LICENSE"]
 keywords = ["lock-free", "queue", "fifo"]
 license = "MIT"
 name = "magnetic"
