@@ -37,18 +37,13 @@
 //! t2.join().unwrap();
 //! ```
 
-#![cfg_attr(feature = "unstable", feature(test, asm))]
-
 #![deny(missing_docs)]
 
-#[cfg(feature = "unstable")]
-extern crate test;
-
 pub mod buffer;
-pub mod spsc;
+pub mod mpmc;
 pub mod mpsc;
 pub mod spmc;
-pub mod mpmc;
+pub mod spsc;
 mod util;
 
 /// Possible errors for `Producer::push`

@@ -9,9 +9,6 @@ name = "magnetic"
 repository = "https://github.com/johnshaw/magnetic"
 version = "2.3.0"
 
-[features]
-unstable = []
-
 [dependencies]
 crossbeam-utils = "0.8"
 
