@@ -4,6 +4,7 @@
 //! be defined independently from the queue implementation.
 
 pub mod dynamic;
+pub mod r#static;
 
 /// All buffers must implement this trait to be used with any of the queues.
 pub trait Buffer<T> {
