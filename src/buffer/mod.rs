@@ -21,3 +21,31 @@ pub trait Buffer<T> {
     /// location beyond the end of the buffer.
     fn at_mut(&mut self, idx: usize) -> *mut T;
 }
+
+impl<T, B: Buffer<T>> Buffer<T> for &mut B {
+    fn size(&self) -> usize {
+        (**self).size()
+    }
+
+    fn at(&self, idx: usize) -> *const T {
+        (**self).at(idx)
+    }
+
+    fn at_mut(&mut self, idx: usize) -> *mut T {
+        (**self).at_mut(idx)
+    }
+}
+
+impl<T, B: Buffer<T>> Buffer<T> for Box<B> {
+    fn size(&self) -> usize {
+        (**self).size()
+    }
+
+    fn at(&self, idx: usize) -> *const T {
+        (**self).at(idx)
+    }
+
+    fn at_mut(&mut self, idx: usize) -> *mut T {
+        (**self).at_mut(idx)
+    }
+}
