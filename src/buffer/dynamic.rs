@@ -1,12 +1,12 @@
 //! Buffer which is allocated at run time
 
+use std::{cell::UnsafeCell, mem::MaybeUninit};
+
 use super::Buffer;
-use crate::util::{alloc, dealloc};
 
 /// Holds data allocated from the heap at run time
 pub struct DynamicBuffer<T> {
-    ptr: *mut T,
-    size: usize,
+    items: Box<[UnsafeCell<MaybeUninit<T>>]>
 }
 
 impl<T> DynamicBuffer<T> {
@@ -15,9 +15,10 @@ impl<T> DynamicBuffer<T> {
     /// allocated.
     pub fn new(size: usize) -> Result<Self, &'static str> {
         if size > 0 {
+            let mut vec = Vec::with_capacity(size);
+            unsafe { vec.set_len(size) };
             Ok(DynamicBuffer {
-                ptr: alloc(size),
-                size,
+                items: vec.into_boxed_slice()
             })
         } else {
             Err("Buffer size must be greater than 0")
@@ -25,29 +26,18 @@ impl<T> DynamicBuffer<T> {
     }
 }
 
-impl<T> Drop for DynamicBuffer<T> {
-    fn drop(&mut self) {
-        dealloc(self.ptr, self.size);
-    }
-}
-
 unsafe impl<T: Send> Send for DynamicBuffer<T> {}
+unsafe impl<T> Sync for DynamicBuffer<T> {}
 
 impl<T> Buffer<T> for DynamicBuffer<T> {
     #[inline(always)]
     fn size(&self) -> usize {
-        self.size
+        self.items.len()
     }
 
     #[inline(always)]
-    fn at(&self, idx: usize) -> *const T {
-        let idx = idx % self.size;
-        unsafe { self.ptr.add(idx) }
-    }
-
-    fn at_mut(&mut self, idx: usize) -> *mut T {
-        let idx = idx % self.size;
-        unsafe { self.ptr.add(idx) }
+    fn at(&self, idx: usize) -> *const UnsafeCell<MaybeUninit<T>> {
+        &self.items[idx % self.items.len()] as *const _
     }
 }
 
@@ -56,8 +46,7 @@ impl<T> Buffer<T> for DynamicBuffer<T> {
 /// faster runtime performance due to the use of a mask instead of modulus
 /// when computing buffer indexes.
 pub struct DynamicBufferP2<T> {
-    ptr: *mut T,
-    mask: usize,
+    items: Box<[UnsafeCell<MaybeUninit<T>>]>
 }
 
 impl<T> DynamicBufferP2<T> {
@@ -68,38 +57,29 @@ impl<T> DynamicBufferP2<T> {
         match size {
             0 => Err("Buffer size must be greater than 0"),
             _ if ((size - 1) & size) == 0 => Ok(DynamicBufferP2 {
-                ptr: alloc(size),
-                mask: size - 1,
+                items: {
+                    let mut vec = Vec::with_capacity(size);
+                    unsafe { vec.set_len(size) };
+                    vec.into_boxed_slice()
+                }
             }),
             _ => Err("Buffer size must be a power of two"),
         }
     }
 }
 
-impl<T> Drop for DynamicBufferP2<T> {
-    fn drop(&mut self) {
-        dealloc(self.ptr, self.mask + 1);
-    }
-}
-
 unsafe impl<T: Send> Send for DynamicBufferP2<T> {}
+unsafe impl<T> Sync for DynamicBufferP2<T> {}
 
 impl<T> Buffer<T> for DynamicBufferP2<T> {
     #[inline(always)]
     fn size(&self) -> usize {
-        self.mask + 1
+        self.items.len()
     }
 
     #[inline(always)]
-    fn at(&self, idx: usize) -> *const T {
-        let idx = idx & self.mask;
-        unsafe { self.ptr.add(idx) }
-    }
-
-    #[inline(always)]
-    fn at_mut(&mut self, idx: usize) -> *mut T {
-        let idx = idx & self.mask;
-        unsafe { self.ptr.add(idx) }
+    fn at(&self, idx: usize) -> *const UnsafeCell<MaybeUninit<T>> {
+        &self.items[idx & (self.items.len() - 1)] as *const _
     }
 }
 
@@ -127,11 +107,8 @@ mod test {
         let size = buf.size();
         for i in 0..size {
             assert_eq!(buf.at(i), buf.at(i));
-            assert_eq!(buf.at_mut(i), buf.at_mut(i));
             assert_eq!(buf.at(i), buf.at(size + i));
-            assert_eq!(buf.at_mut(i), buf.at_mut(size + i));
             assert!(buf.at(i) != buf.at(i + 1));
-            assert!(buf.at_mut(i) != buf.at_mut(i + 1));
         }
     }
 

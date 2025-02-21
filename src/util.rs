@@ -1,30 +1,20 @@
-use std::mem;
-use std::ptr;
 use std::sync::atomic::AtomicUsize;
 
 use super::buffer::Buffer;
 
-pub fn alloc<T>(size: usize) -> *mut T {
-    let mut vec = Vec::with_capacity(size);
-    let ptr = vec.as_mut_ptr();
-    mem::forget(vec);
-    ptr
-}
-
-pub fn dealloc<T>(ptr: *mut T, size: usize) {
-    unsafe {
-        Vec::from_raw_parts(ptr, 0, size);
-    }
-}
-
+// The caller guarantees that no references currently exist to the value at head
 #[inline(always)]
-pub fn buf_write<T, B: Buffer<T>>(buf: &mut B, head: usize, value: T) {
-    unsafe { ptr::write(buf.at_mut(head), value) }
+pub unsafe fn buf_write<T, B: Buffer<T>>(buf: &B, head: usize, value: T) {
+    let slot = unsafe { &mut *(*buf.at(head)).get() };
+    slot.write(value);
 }
 
+// The caller guarantees that no references currently exist to the value at tail and the value is
+// initialized.
 #[inline(always)]
-pub fn buf_read<T, B: Buffer<T>>(buf: &B, tail: usize) -> T {
-    unsafe { ptr::read(buf.at(tail)) }
+pub unsafe fn buf_read<T, B: Buffer<T>>(buf: &B, tail: usize) -> T {
+    let slot = unsafe { &*(*buf.at(tail)).get() };
+    slot.assume_init_read()
 }
 
 #[derive(Default)]

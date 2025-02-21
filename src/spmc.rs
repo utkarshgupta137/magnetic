@@ -6,7 +6,6 @@
 //! `SPMCProducer` is `Send` and `!Sync` while `SPMCConsumer` is `Send` and
 //! `Sync`.
 
-use std::cell::UnsafeCell;
 use std::hint::spin_loop;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -26,14 +25,12 @@ struct SPMCQueue<T, B: Buffer<T>> {
     _marker: PhantomData<T>,
 }
 
-unsafe impl<T, B: Buffer<T>> Sync for SPMCQueue<T, B> {}
-
 /// Consumer end of the queue. Implements the trait `Consumer<T>`.
 pub struct SPMCConsumer<T, B: Buffer<T>> {
-    queue: Arc<UnsafeCell<SPMCQueue<T, B>>>,
+    queue: Arc<SPMCQueue<T, B>>,
 }
 
-unsafe impl<T: Send, B: Buffer<T>> Send for SPMCConsumer<T, B> {}
+unsafe impl<T: Send, B: Buffer<T>> Sync for SPMCConsumer<T, B> {}
 
 impl<T, B: Buffer<T>> Clone for SPMCConsumer<T, B> {
     fn clone(&self) -> Self {
@@ -45,10 +42,8 @@ impl<T, B: Buffer<T>> Clone for SPMCConsumer<T, B> {
 
 /// Producer end of the queue. Implements the trait `Producer<T>`.
 pub struct SPMCProducer<T, B: Buffer<T>> {
-    queue: Arc<UnsafeCell<SPMCQueue<T, B>>>,
+    queue: Arc<SPMCQueue<T, B>>,
 }
-
-unsafe impl<T: Send, B: Buffer<T>> Send for SPMCProducer<T, B> {}
 
 /// Creates a new SPMC queue
 ///
@@ -73,7 +68,7 @@ pub fn spmc_queue<T, B: Buffer<T>>(buf: B) -> (SPMCProducer<T, B>, SPMCConsumer<
         _marker: PhantomData,
     };
 
-    let queue = Arc::new(UnsafeCell::new(queue));
+    let queue = Arc::new(queue);
 
     (
         SPMCProducer {
@@ -88,14 +83,14 @@ impl<T, B: Buffer<T>> Drop for SPMCQueue<T, B> {
         let head = self.head.load(Ordering::Relaxed);
         let tail = self.tail.curr.load(Ordering::Relaxed);
         for pos in tail..head {
-            buf_read(&self.buf, pos);
+            unsafe { buf_read(&self.buf, pos) };
         }
     }
 }
 
 impl<T, B: Buffer<T>> Producer<T> for SPMCProducer<T, B> {
     fn push(&self, value: T) -> Result<(), PushError<T>> {
-        let q = unsafe { &mut *self.queue.get() };
+        let q = &self.queue;
         let head = q.head.load(Ordering::Relaxed);
 
         loop {
@@ -107,20 +102,20 @@ impl<T, B: Buffer<T>> Producer<T> for SPMCProducer<T, B> {
             spin_loop();
         }
 
-        buf_write(&mut q.buf, head, value);
+        unsafe { buf_write(&q.buf, head, value) };
         q.head.store(head + 1, Ordering::Release);
         Ok(())
     }
 
     fn try_push(&self, value: T) -> Result<(), TryPushError<T>> {
-        let q = unsafe { &mut *self.queue.get() };
+        let q = &self.queue;
         let head = q.head.load(Ordering::Relaxed);
         if Arc::strong_count(&self.queue) < 2 {
             Err(TryPushError::Disconnected(value))
         } else if q.tail.curr.load(Ordering::Acquire) + q.buf.size() <= head {
             Err(TryPushError::Full(value))
         } else {
-            buf_write(&mut q.buf, head, value);
+            unsafe { buf_write(&q.buf, head, value) };
             q.head.store(head + 1, Ordering::Release);
             Ok(())
         }
@@ -129,7 +124,7 @@ impl<T, B: Buffer<T>> Producer<T> for SPMCProducer<T, B> {
 
 impl<T, B: Buffer<T>> Consumer<T> for SPMCConsumer<T, B> {
     fn pop(&self) -> Result<T, PopError> {
-        let q = unsafe { &mut *self.queue.get() };
+        let q = &self.queue;
 
         let tail = q.tail.next.fetch_add(1, Ordering::Relaxed);
         let tail_plus_one = tail + 1;
@@ -142,7 +137,7 @@ impl<T, B: Buffer<T>> Consumer<T> for SPMCConsumer<T, B> {
             spin_loop();
         }
 
-        let v = buf_read(&q.buf, tail);
+        let v = unsafe { buf_read(&q.buf, tail) };
 
         while q.tail.curr.load(Ordering::Relaxed) < tail {
             spin_loop();
@@ -152,7 +147,7 @@ impl<T, B: Buffer<T>> Consumer<T> for SPMCConsumer<T, B> {
     }
 
     fn try_pop(&self) -> Result<T, TryPopError> {
-        let q = unsafe { &mut *self.queue.get() };
+        let q = &self.queue;
         loop {
             let tail = q.tail.curr.load(Ordering::Relaxed);
             let tail_plus_one = tail + 1;
@@ -168,7 +163,7 @@ impl<T, B: Buffer<T>> Consumer<T> for SPMCConsumer<T, B> {
                 .compare_exchange_weak(tail, tail_plus_one, Ordering::Acquire, Ordering::Acquire)
                 .is_ok()
             {
-                let v = buf_read(&q.buf, tail);
+                let v = unsafe { buf_read(&q.buf, tail) };
                 q.tail.curr.store(tail_plus_one, Ordering::Release);
                 return Ok(v);
             }
@@ -178,8 +173,7 @@ impl<T, B: Buffer<T>> Consumer<T> for SPMCConsumer<T, B> {
 
 impl<T, B: Buffer<T>> Drop for SPMCProducer<T, B> {
     fn drop(&mut self) {
-        let q = unsafe { &mut *self.queue.get() };
-        q.producer.store(false, Ordering::Release);
+        self.queue.producer.store(false, Ordering::Release);
     }
 }
 

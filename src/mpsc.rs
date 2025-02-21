@@ -6,7 +6,6 @@
 //! the `MPSCProducer` is `Send` and `Sync` while the `MPSCConsumer` is `Send`
 //! and `!Sync`.
 
-use std::cell::UnsafeCell;
 use std::hint::spin_loop;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -26,21 +25,17 @@ struct MPSCQueue<T, B: Buffer<T>> {
     _marker: PhantomData<T>,
 }
 
-unsafe impl<T, B: Buffer<T>> Sync for MPSCQueue<T, B> {}
-
 /// Consumer end of the queue. Implements the trait `Consumer<T>`.
 pub struct MPSCConsumer<T, B: Buffer<T>> {
-    queue: Arc<UnsafeCell<MPSCQueue<T, B>>>,
+    queue: Arc<MPSCQueue<T, B>>,
 }
-
-unsafe impl<T: Send, B: Buffer<T>> Send for MPSCConsumer<T, B> {}
 
 /// Producer end of the queue. Implements the trait `Producer<T>`.
 pub struct MPSCProducer<T, B: Buffer<T>> {
-    queue: Arc<UnsafeCell<MPSCQueue<T, B>>>,
+    queue: Arc<MPSCQueue<T, B>>,
 }
 
-unsafe impl<T: Send, B: Buffer<T>> Send for MPSCProducer<T, B> {}
+unsafe impl<T: Send, B: Buffer<T>> Sync for MPSCProducer<T, B> {}
 
 impl<T, B: Buffer<T>> Clone for MPSCProducer<T, B> {
     fn clone(&self) -> Self {
@@ -73,7 +68,7 @@ pub fn mpsc_queue<T, B: Buffer<T>>(buf: B) -> (MPSCProducer<T, B>, MPSCConsumer<
         _marker: PhantomData,
     };
 
-    let queue = Arc::new(UnsafeCell::new(queue));
+    let queue = Arc::new(queue);
 
     (
         MPSCProducer {
@@ -88,14 +83,14 @@ impl<T, B: Buffer<T>> Drop for MPSCQueue<T, B> {
         let head = self.head.curr.load(Ordering::Relaxed);
         let tail = self.tail.load(Ordering::Relaxed);
         for pos in tail..head {
-            buf_read(&self.buf, pos);
+            unsafe { buf_read(&self.buf, pos) };
         }
     }
 }
 
 impl<T, B: Buffer<T>> Producer<T> for MPSCProducer<T, B> {
     fn push(&self, value: T) -> Result<(), PushError<T>> {
-        let q = unsafe { &mut *self.queue.get() };
+        let q = &self.queue;
 
         let head = q.head.next.fetch_add(1, Ordering::Relaxed);
         loop {
@@ -107,7 +102,7 @@ impl<T, B: Buffer<T>> Producer<T> for MPSCProducer<T, B> {
             spin_loop();
         }
 
-        buf_write(&mut q.buf, head, value);
+        unsafe { buf_write(&q.buf, head, value) };
 
         while q.head.curr.load(Ordering::Relaxed) < head {
             spin_loop();
@@ -117,7 +112,7 @@ impl<T, B: Buffer<T>> Producer<T> for MPSCProducer<T, B> {
     }
 
     fn try_push(&self, value: T) -> Result<(), TryPushError<T>> {
-        let q = unsafe { &mut *self.queue.get() };
+        let q = &self.queue;
         loop {
             let head = q.head.curr.load(Ordering::Relaxed);
             if !q.consumer.load(Ordering::Acquire) {
@@ -131,7 +126,7 @@ impl<T, B: Buffer<T>> Producer<T> for MPSCProducer<T, B> {
                     .compare_exchange_weak(head, next, Ordering::Acquire, Ordering::Acquire)
                     .is_ok()
                 {
-                    buf_write(&mut q.buf, head, value);
+                    unsafe { buf_write(&q.buf, head, value) };
                     q.head.curr.store(next, Ordering::Release);
                     return Ok(());
                 }
@@ -142,7 +137,7 @@ impl<T, B: Buffer<T>> Producer<T> for MPSCProducer<T, B> {
 
 impl<T, B: Buffer<T>> Consumer<T> for MPSCConsumer<T, B> {
     fn pop(&self) -> Result<T, PopError> {
-        let q = unsafe { &mut *self.queue.get() };
+        let q = &self.queue;
 
         let tail = q.tail.load(Ordering::Relaxed);
         let tail_plus_one = tail + 1;
@@ -155,14 +150,14 @@ impl<T, B: Buffer<T>> Consumer<T> for MPSCConsumer<T, B> {
             spin_loop();
         }
 
-        let v = buf_read(&q.buf, tail);
+        let v = unsafe { buf_read(&q.buf, tail) };
 
         q.tail.store(tail_plus_one, Ordering::Release);
         Ok(v)
     }
 
     fn try_pop(&self) -> Result<T, TryPopError> {
-        let q = unsafe { &mut *self.queue.get() };
+        let q = &self.queue;
         let tail = q.tail.load(Ordering::Relaxed);
         let tail_plus_one = tail + 1;
 
@@ -173,7 +168,7 @@ impl<T, B: Buffer<T>> Consumer<T> for MPSCConsumer<T, B> {
                 Err(TryPopError::Disconnected)
             }
         } else {
-            let v = buf_read(&q.buf, tail);
+            let v = unsafe { buf_read(&q.buf, tail) };
             q.tail.store(tail_plus_one, Ordering::Release);
             Ok(v)
         }
@@ -182,8 +177,7 @@ impl<T, B: Buffer<T>> Consumer<T> for MPSCConsumer<T, B> {
 
 impl<T, B: Buffer<T>> Drop for MPSCConsumer<T, B> {
     fn drop(&mut self) {
-        let q = unsafe { &mut *self.queue.get() };
-        q.consumer.store(false, Ordering::Release);
+        self.queue.consumer.store(false, Ordering::Release);
     }
 }
 
