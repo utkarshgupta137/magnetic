@@ -43,6 +43,7 @@ impl<T, B: Buffer<T>> Clone for SPMCConsumer<T, B> {
 /// Producer end of the queue. Implements the trait `Producer<T>`.
 pub struct SPMCProducer<T, B: Buffer<T>> {
     queue: Arc<SPMCQueue<T, B>>,
+    _not_sync: PhantomData<std::cell::Cell<()>>
 }
 
 /// Creates a new SPMC queue
@@ -73,6 +74,7 @@ pub fn spmc_queue<T, B: Buffer<T>>(buf: B) -> (SPMCProducer<T, B>, SPMCConsumer<
     (
         SPMCProducer {
             queue: queue.clone(),
+            _not_sync: PhantomData,
         },
         SPMCConsumer { queue },
     )

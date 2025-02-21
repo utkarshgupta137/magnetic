@@ -28,6 +28,7 @@ struct MPSCQueue<T, B: Buffer<T>> {
 /// Consumer end of the queue. Implements the trait `Consumer<T>`.
 pub struct MPSCConsumer<T, B: Buffer<T>> {
     queue: Arc<MPSCQueue<T, B>>,
+    _not_sync: PhantomData<std::cell::Cell<()>>
 }
 
 /// Producer end of the queue. Implements the trait `Producer<T>`.
@@ -74,7 +75,7 @@ pub fn mpsc_queue<T, B: Buffer<T>>(buf: B) -> (MPSCProducer<T, B>, MPSCConsumer<
         MPSCProducer {
             queue: queue.clone(),
         },
-        MPSCConsumer { queue },
+        MPSCConsumer { queue, _not_sync: PhantomData },
     )
 }
 

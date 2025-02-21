@@ -26,11 +26,13 @@ struct SPSCQueue<T, B: Buffer<T>> {
 /// Consumer end of the queue. Implements the trait `Consumer<T>`.
 pub struct SPSCConsumer<T, B: Buffer<T>> {
     queue: Arc<SPSCQueue<T, B>>,
+    _not_sync: PhantomData<std::cell::Cell<()>>
 }
 
 /// Producer end of the queue. Implements the trait `Producer<T>`.
 pub struct SPSCProducer<T, B: Buffer<T>> {
     queue: Arc<SPSCQueue<T, B>>,
+    _not_sync: PhantomData<std::cell::Cell<()>>
 }
 
 /// Creates a new SPSC queue
@@ -60,8 +62,9 @@ pub fn spsc_queue<T, B: Buffer<T>>(buf: B) -> (SPSCProducer<T, B>, SPSCConsumer<
     (
         SPSCProducer {
             queue: queue.clone(),
+            _not_sync: PhantomData,
         },
-        SPSCConsumer { queue },
+        SPSCConsumer { queue, _not_sync: PhantomData },
     )
 }
 
