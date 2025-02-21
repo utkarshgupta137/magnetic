@@ -11,7 +11,7 @@ license = "MIT"
 name = "magnetic"
 readme = "README.md"
 repository = "https://github.com/johnshaw/magnetic"
-version = "2.4.1"
+version = "2.5.0"
 
 [dependencies]
 crossbeam-utils = "0.8"
