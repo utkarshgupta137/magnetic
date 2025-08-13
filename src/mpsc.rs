@@ -28,7 +28,7 @@ struct MPSCQueue<T, B: Buffer<T>> {
 /// Consumer end of the queue. Implements the trait `Consumer<T>`.
 pub struct MPSCConsumer<T, B: Buffer<T>> {
     queue: Arc<MPSCQueue<T, B>>,
-    _not_sync: PhantomData<std::cell::Cell<()>>
+    _not_sync: PhantomData<std::cell::Cell<()>>,
 }
 
 /// Producer end of the queue. Implements the trait `Producer<T>`.
@@ -75,7 +75,10 @@ pub fn mpsc_queue<T, B: Buffer<T>>(buf: B) -> (MPSCProducer<T, B>, MPSCConsumer<
         MPSCProducer {
             queue: queue.clone(),
         },
-        MPSCConsumer { queue, _not_sync: PhantomData },
+        MPSCConsumer {
+            queue,
+            _not_sync: PhantomData,
+        },
     )
 }
 
@@ -92,8 +95,8 @@ impl<T, B: Buffer<T>> Drop for MPSCQueue<T, B> {
 impl<T, B: Buffer<T>> Producer<T> for MPSCProducer<T, B> {
     fn push(&self, value: T) -> Result<(), PushError<T>> {
         let q = &self.queue;
-
         let head = q.head.next.fetch_add(1, Ordering::Relaxed);
+
         loop {
             if !q.consumer.load(Ordering::Acquire) {
                 return Err(PushError::Disconnected(value));
@@ -104,7 +107,6 @@ impl<T, B: Buffer<T>> Producer<T> for MPSCProducer<T, B> {
         }
 
         unsafe { buf_write(&q.buf, head, value) };
-
         while q.head.curr.load(Ordering::Relaxed) < head {
             spin_loop();
         }
@@ -116,21 +118,21 @@ impl<T, B: Buffer<T>> Producer<T> for MPSCProducer<T, B> {
         let q = &self.queue;
         loop {
             let head = q.head.curr.load(Ordering::Relaxed);
+            let head_plus_one = head + 1;
+
             if !q.consumer.load(Ordering::Acquire) {
                 return Err(TryPushError::Disconnected(value));
             } else if q.tail.load(Ordering::Acquire) + q.buf.size() <= head {
                 return Err(TryPushError::Full(value));
-            } else {
-                let next = head + 1;
-                if q.head
-                    .next
-                    .compare_exchange_weak(head, next, Ordering::Acquire, Ordering::Acquire)
-                    .is_ok()
-                {
-                    unsafe { buf_write(&q.buf, head, value) };
-                    q.head.curr.store(next, Ordering::Release);
-                    return Ok(());
-                }
+            } else if q
+                .head
+                .next
+                .compare_exchange_weak(head, head_plus_one, Ordering::Acquire, Ordering::Acquire)
+                .is_ok()
+            {
+                unsafe { buf_write(&q.buf, head, value) };
+                q.head.curr.store(head_plus_one, Ordering::Release);
+                return Ok(());
             }
         }
     }
@@ -139,20 +141,19 @@ impl<T, B: Buffer<T>> Producer<T> for MPSCProducer<T, B> {
 impl<T, B: Buffer<T>> Consumer<T> for MPSCConsumer<T, B> {
     fn pop(&self) -> Result<T, PopError> {
         let q = &self.queue;
-
         let tail = q.tail.load(Ordering::Relaxed);
         let tail_plus_one = tail + 1;
+
         loop {
-            if tail_plus_one <= q.head.curr.load(Ordering::Acquire) {
+            if q.head.curr.load(Ordering::Acquire) >= tail_plus_one {
                 break;
-            } else if Arc::strong_count(&self.queue) < 2 {
+            } else if Arc::strong_count(q) < 2 {
                 return Err(PopError::Disconnected);
             }
             spin_loop();
         }
 
         let v = unsafe { buf_read(&q.buf, tail) };
-
         q.tail.store(tail_plus_one, Ordering::Release);
         Ok(v)
     }
@@ -162,17 +163,17 @@ impl<T, B: Buffer<T>> Consumer<T> for MPSCConsumer<T, B> {
         let tail = q.tail.load(Ordering::Relaxed);
         let tail_plus_one = tail + 1;
 
-        if tail_plus_one > q.head.curr.load(Ordering::Acquire) {
-            if Arc::strong_count(&self.queue) > 1 {
-                Err(TryPopError::Empty)
-            } else {
+        if q.head.curr.load(Ordering::Acquire) < tail_plus_one {
+            return if Arc::strong_count(q) < 2 {
                 Err(TryPopError::Disconnected)
-            }
-        } else {
-            let v = unsafe { buf_read(&q.buf, tail) };
-            q.tail.store(tail_plus_one, Ordering::Release);
-            Ok(v)
+            } else {
+                Err(TryPopError::Empty)
+            };
         }
+
+        let v = unsafe { buf_read(&q.buf, tail) };
+        q.tail.store(tail_plus_one, Ordering::Release);
+        Ok(v)
     }
 }
 

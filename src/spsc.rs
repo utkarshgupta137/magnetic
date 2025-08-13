@@ -26,13 +26,13 @@ struct SPSCQueue<T, B: Buffer<T>> {
 /// Consumer end of the queue. Implements the trait `Consumer<T>`.
 pub struct SPSCConsumer<T, B: Buffer<T>> {
     queue: Arc<SPSCQueue<T, B>>,
-    _not_sync: PhantomData<std::cell::Cell<()>>
+    _not_sync: PhantomData<std::cell::Cell<()>>,
 }
 
 /// Producer end of the queue. Implements the trait `Producer<T>`.
 pub struct SPSCProducer<T, B: Buffer<T>> {
     queue: Arc<SPSCQueue<T, B>>,
-    _not_sync: PhantomData<std::cell::Cell<()>>
+    _not_sync: PhantomData<std::cell::Cell<()>>,
 }
 
 /// Creates a new SPSC queue
@@ -64,7 +64,10 @@ pub fn spsc_queue<T, B: Buffer<T>>(buf: B) -> (SPSCProducer<T, B>, SPSCConsumer<
             queue: queue.clone(),
             _not_sync: PhantomData,
         },
-        SPSCConsumer { queue, _not_sync: PhantomData },
+        SPSCConsumer {
+            queue,
+            _not_sync: PhantomData,
+        },
     )
 }
 
@@ -84,7 +87,7 @@ impl<T, B: Buffer<T>> Producer<T> for SPSCProducer<T, B> {
         let head = q.head.load(Ordering::Relaxed);
 
         loop {
-            if Arc::strong_count(&self.queue) < 2 {
+            if Arc::strong_count(q) < 2 {
                 return Err(PushError::Disconnected(value));
             } else if q.tail.load(Ordering::Acquire) + q.buf.size() > head {
                 break;
@@ -100,7 +103,8 @@ impl<T, B: Buffer<T>> Producer<T> for SPSCProducer<T, B> {
     fn try_push(&self, value: T) -> Result<(), TryPushError<T>> {
         let q = &self.queue;
         let head = q.head.load(Ordering::Relaxed);
-        if Arc::strong_count(&self.queue) < 2 {
+
+        if Arc::strong_count(q) < 2 {
             Err(TryPushError::Disconnected(value))
         } else if q.tail.load(Ordering::Acquire) + q.buf.size() <= head {
             Err(TryPushError::Full(value))
@@ -115,11 +119,11 @@ impl<T, B: Buffer<T>> Producer<T> for SPSCProducer<T, B> {
 impl<T, B: Buffer<T>> Consumer<T> for SPSCConsumer<T, B> {
     fn pop(&self) -> Result<T, PopError> {
         let q = &self.queue;
-
         let tail = q.tail.load(Ordering::Relaxed);
         let tail_plus_one = tail + 1;
+
         loop {
-            if tail_plus_one <= q.head.load(Ordering::Acquire) {
+            if q.head.load(Ordering::Acquire) >= tail_plus_one {
                 break;
             } else if Arc::strong_count(q) < 2 {
                 return Err(PopError::Disconnected);
@@ -128,7 +132,6 @@ impl<T, B: Buffer<T>> Consumer<T> for SPSCConsumer<T, B> {
         }
 
         let v = unsafe { buf_read(&q.buf, tail) };
-
         q.tail.store(tail_plus_one, Ordering::Release);
         Ok(v)
     }
@@ -138,17 +141,17 @@ impl<T, B: Buffer<T>> Consumer<T> for SPSCConsumer<T, B> {
         let tail = q.tail.load(Ordering::Relaxed);
         let tail_plus_one = tail + 1;
 
-        if tail_plus_one > q.head.load(Ordering::Acquire) {
-            if Arc::strong_count(q) > 1 {
-                Err(TryPopError::Empty)
-            } else {
+        if q.head.load(Ordering::Acquire) < tail_plus_one {
+            return if Arc::strong_count(q) < 2 {
                 Err(TryPopError::Disconnected)
-            }
-        } else {
-            let v = unsafe { buf_read(&q.buf, tail) };
-            q.tail.store(tail_plus_one, Ordering::Release);
-            Ok(v)
+            } else {
+                Err(TryPopError::Empty)
+            };
         }
+
+        let v = unsafe { buf_read(&q.buf, tail) };
+        q.tail.store(tail_plus_one, Ordering::Release);
+        Ok(v)
     }
 }
 

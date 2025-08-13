@@ -43,7 +43,7 @@ impl<T, B: Buffer<T>> Clone for SPMCConsumer<T, B> {
 /// Producer end of the queue. Implements the trait `Producer<T>`.
 pub struct SPMCProducer<T, B: Buffer<T>> {
     queue: Arc<SPMCQueue<T, B>>,
-    _not_sync: PhantomData<std::cell::Cell<()>>
+    _not_sync: PhantomData<std::cell::Cell<()>>,
 }
 
 /// Creates a new SPMC queue
@@ -96,7 +96,7 @@ impl<T, B: Buffer<T>> Producer<T> for SPMCProducer<T, B> {
         let head = q.head.load(Ordering::Relaxed);
 
         loop {
-            if Arc::strong_count(&self.queue) < 2 {
+            if Arc::strong_count(q) < 2 {
                 return Err(PushError::Disconnected(value));
             } else if q.tail.curr.load(Ordering::Acquire) + q.buf.size() > head {
                 break;
@@ -112,7 +112,8 @@ impl<T, B: Buffer<T>> Producer<T> for SPMCProducer<T, B> {
     fn try_push(&self, value: T) -> Result<(), TryPushError<T>> {
         let q = &self.queue;
         let head = q.head.load(Ordering::Relaxed);
-        if Arc::strong_count(&self.queue) < 2 {
+
+        if Arc::strong_count(q) < 2 {
             Err(TryPushError::Disconnected(value))
         } else if q.tail.curr.load(Ordering::Acquire) + q.buf.size() <= head {
             Err(TryPushError::Full(value))
@@ -127,11 +128,11 @@ impl<T, B: Buffer<T>> Producer<T> for SPMCProducer<T, B> {
 impl<T, B: Buffer<T>> Consumer<T> for SPMCConsumer<T, B> {
     fn pop(&self) -> Result<T, PopError> {
         let q = &self.queue;
-
         let tail = q.tail.next.fetch_add(1, Ordering::Relaxed);
         let tail_plus_one = tail + 1;
+
         loop {
-            if tail_plus_one <= q.head.load(Ordering::Acquire) {
+            if q.head.load(Ordering::Acquire) >= tail_plus_one {
                 break;
             } else if !q.producer.load(Ordering::Acquire) {
                 return Err(PopError::Disconnected);
@@ -140,7 +141,6 @@ impl<T, B: Buffer<T>> Consumer<T> for SPMCConsumer<T, B> {
         }
 
         let v = unsafe { buf_read(&q.buf, tail) };
-
         while q.tail.curr.load(Ordering::Relaxed) < tail {
             spin_loop();
         }
@@ -153,12 +153,13 @@ impl<T, B: Buffer<T>> Consumer<T> for SPMCConsumer<T, B> {
         loop {
             let tail = q.tail.curr.load(Ordering::Relaxed);
             let tail_plus_one = tail + 1;
-            if tail_plus_one > q.head.load(Ordering::Acquire) {
-                if q.producer.load(Ordering::Acquire) {
-                    return Err(TryPopError::Empty);
+
+            if q.head.load(Ordering::Acquire) < tail_plus_one {
+                return if !q.producer.load(Ordering::Acquire) {
+                    Err(TryPopError::Disconnected)
                 } else {
-                    return Err(TryPopError::Disconnected);
-                }
+                    Err(TryPopError::Empty)
+                };
             } else if q
                 .tail
                 .next
