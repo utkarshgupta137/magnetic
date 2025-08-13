@@ -82,15 +82,19 @@ impl<T, B: Buffer<T>> Drop for SPSCQueue<T, B> {
 }
 
 impl<T, B: Buffer<T>> Producer<T> for SPSCProducer<T, B> {
+    fn is_closed(&self) -> bool {
+        Arc::strong_count(&self.queue) < 2
+    }
+
     fn push(&self, value: T) -> Result<(), PushError<T>> {
         let q = &self.queue;
         let head = q.head.load(Ordering::Relaxed);
 
         loop {
-            if Arc::strong_count(q) < 2 {
-                return Err(PushError::Disconnected(value));
-            } else if q.tail.load(Ordering::Acquire) + q.buf.size() > head {
+            if q.tail.load(Ordering::Acquire) + q.buf.size() > head {
                 break;
+            } else if Arc::strong_count(q) < 2 {
+                return Err(PushError::Disconnected(value));
             }
             spin_loop();
         }
@@ -104,19 +108,25 @@ impl<T, B: Buffer<T>> Producer<T> for SPSCProducer<T, B> {
         let q = &self.queue;
         let head = q.head.load(Ordering::Relaxed);
 
-        if Arc::strong_count(q) < 2 {
-            Err(TryPushError::Disconnected(value))
-        } else if q.tail.load(Ordering::Acquire) + q.buf.size() <= head {
-            Err(TryPushError::Full(value))
-        } else {
-            unsafe { buf_write(&q.buf, head, value) };
-            q.head.store(head + 1, Ordering::Release);
-            Ok(())
+        if q.tail.load(Ordering::Acquire) + q.buf.size() <= head {
+            return if Arc::strong_count(q) < 2 {
+                Err(TryPushError::Disconnected(value))
+            } else {
+                Err(TryPushError::Full(value))
+            };
         }
+
+        unsafe { buf_write(&q.buf, head, value) };
+        q.head.store(head + 1, Ordering::Release);
+        Ok(())
     }
 }
 
 impl<T, B: Buffer<T>> Consumer<T> for SPSCConsumer<T, B> {
+    fn is_closed(&self) -> bool {
+        Arc::strong_count(&self.queue) < 2
+    }
+
     fn pop(&self) -> Result<T, PopError> {
         let q = &self.queue;
         let tail = q.tail.load(Ordering::Relaxed);
@@ -238,9 +248,11 @@ mod test {
         assert_eq!(c.pop(), Err(PopError::Disconnected));
         assert_eq!(c.try_pop(), Err(TryPopError::Disconnected));
 
-        let (p, c) = spsc_queue(DynamicBuffer::new(3).unwrap());
+        let (p, c) = spsc_queue(DynamicBuffer::new(2).unwrap());
         p.push(1).unwrap();
         std::mem::drop(c);
+        assert!(p.is_closed());
+        p.push(1).unwrap();
         assert_eq!(p.push(2), Err(PushError::Disconnected(2)));
         assert_eq!(p.try_push(2), Err(TryPushError::Disconnected(2)));
 

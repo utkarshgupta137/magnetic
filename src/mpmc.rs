@@ -102,15 +102,19 @@ impl<T, B: Buffer<T>> Drop for MPMCQueue<T, B> {
 }
 
 impl<T, B: Buffer<T>> Producer<T> for MPMCProducer<T, B> {
+    fn is_closed(&self) -> bool {
+        self.queue.consumers.load(Ordering::Relaxed) == 0
+    }
+
     fn push(&self, value: T) -> Result<(), PushError<T>> {
         let q = &self.queue;
         let head = q.head.next.fetch_add(1, Ordering::Relaxed);
 
         loop {
-            if q.consumers.load(Ordering::Acquire) == 0 {
-                return Err(PushError::Disconnected(value));
-            } else if q.tail.curr.load(Ordering::Acquire) + q.buf.size() > head {
+            if q.tail.curr.load(Ordering::Acquire) + q.buf.size() > head {
                 break;
+            } else if q.consumers.load(Ordering::Acquire) == 0 {
+                return Err(PushError::Disconnected(value));
             }
             spin_loop();
         }
@@ -129,10 +133,12 @@ impl<T, B: Buffer<T>> Producer<T> for MPMCProducer<T, B> {
             let head = q.head.curr.load(Ordering::Relaxed);
             let head_plus_one = head + 1;
 
-            if q.consumers.load(Ordering::Acquire) == 0 {
-                return Err(TryPushError::Disconnected(value));
-            } else if q.tail.curr.load(Ordering::Acquire) + q.buf.size() <= head {
-                return Err(TryPushError::Full(value));
+            if q.tail.curr.load(Ordering::Acquire) + q.buf.size() <= head {
+                return if q.consumers.load(Ordering::Acquire) == 0 {
+                    Err(TryPushError::Disconnected(value))
+                } else {
+                    Err(TryPushError::Full(value))
+                };
             } else if q
                 .head
                 .next
@@ -148,6 +154,10 @@ impl<T, B: Buffer<T>> Producer<T> for MPMCProducer<T, B> {
 }
 
 impl<T, B: Buffer<T>> Consumer<T> for MPMCConsumer<T, B> {
+    fn is_closed(&self) -> bool {
+        self.queue.producers.load(Ordering::Relaxed) == 0
+    }
+
     fn pop(&self) -> Result<T, PopError> {
         let q = &self.queue;
         let tail = q.tail.next.fetch_add(1, Ordering::Relaxed);
@@ -307,9 +317,11 @@ mod test {
         assert_eq!(c.pop(), Err(PopError::Disconnected));
         assert_eq!(c.try_pop(), Err(TryPopError::Disconnected));
 
-        let (p, c) = mpmc_queue(DynamicBuffer::new(32).unwrap());
+        let (p, c) = mpmc_queue(DynamicBuffer::new(2).unwrap());
         p.push(1).unwrap();
         std::mem::drop(c);
+        assert!(p.is_closed());
+        p.push(1).unwrap();
         assert_eq!(p.push(2), Err(PushError::Disconnected(2)));
         assert_eq!(p.try_push(2), Err(TryPushError::Disconnected(2)));
 

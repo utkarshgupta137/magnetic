@@ -93,15 +93,19 @@ impl<T, B: Buffer<T>> Drop for MPSCQueue<T, B> {
 }
 
 impl<T, B: Buffer<T>> Producer<T> for MPSCProducer<T, B> {
+    fn is_closed(&self) -> bool {
+        !self.queue.consumer.load(Ordering::Relaxed)
+    }
+
     fn push(&self, value: T) -> Result<(), PushError<T>> {
         let q = &self.queue;
         let head = q.head.next.fetch_add(1, Ordering::Relaxed);
 
         loop {
-            if !q.consumer.load(Ordering::Acquire) {
-                return Err(PushError::Disconnected(value));
-            } else if q.tail.load(Ordering::Acquire) + q.buf.size() > head {
+            if q.tail.load(Ordering::Acquire) + q.buf.size() > head {
                 break;
+            } else if !q.consumer.load(Ordering::Acquire) {
+                return Err(PushError::Disconnected(value));
             }
             spin_loop();
         }
@@ -120,10 +124,12 @@ impl<T, B: Buffer<T>> Producer<T> for MPSCProducer<T, B> {
             let head = q.head.curr.load(Ordering::Relaxed);
             let head_plus_one = head + 1;
 
-            if !q.consumer.load(Ordering::Acquire) {
-                return Err(TryPushError::Disconnected(value));
-            } else if q.tail.load(Ordering::Acquire) + q.buf.size() <= head {
-                return Err(TryPushError::Full(value));
+            if q.tail.load(Ordering::Acquire) + q.buf.size() <= head {
+                return if !q.consumer.load(Ordering::Acquire) {
+                    Err(TryPushError::Disconnected(value))
+                } else {
+                    Err(TryPushError::Full(value))
+                };
             } else if q
                 .head
                 .next
@@ -139,6 +145,10 @@ impl<T, B: Buffer<T>> Producer<T> for MPSCProducer<T, B> {
 }
 
 impl<T, B: Buffer<T>> Consumer<T> for MPSCConsumer<T, B> {
+    fn is_closed(&self) -> bool {
+        Arc::strong_count(&self.queue) < 2
+    }
+
     fn pop(&self) -> Result<T, PopError> {
         let q = &self.queue;
         let tail = q.tail.load(Ordering::Relaxed);
@@ -277,9 +287,11 @@ mod test {
         assert_eq!(c.pop(), Err(PopError::Disconnected));
         assert_eq!(c.try_pop(), Err(TryPopError::Disconnected));
 
-        let (p, c) = mpsc_queue(DynamicBuffer::new(32).unwrap());
+        let (p, c) = mpsc_queue(DynamicBuffer::new(2).unwrap());
         p.push(1).unwrap();
         std::mem::drop(c);
+        assert!(p.is_closed());
+        p.push(1).unwrap();
         assert_eq!(p.push(2), Err(PushError::Disconnected(2)));
         assert_eq!(p.try_push(2), Err(TryPushError::Disconnected(2)));
 
