@@ -144,7 +144,7 @@ impl<T, B: Buffer<T>> Consumer<T> for SPMCConsumer<T, B> {
         loop {
             if q.head.load(Ordering::Acquire) >= tail_plus_one {
                 break;
-            } else if !q.producer.load(Ordering::Acquire) {
+            } else if !q.producer.load(Ordering::Relaxed) {
                 return Err(PopError::Disconnected);
             }
             spin_loop();
@@ -165,7 +165,9 @@ impl<T, B: Buffer<T>> Consumer<T> for SPMCConsumer<T, B> {
             let tail_plus_one = tail + 1;
 
             if q.head.load(Ordering::Acquire) < tail_plus_one {
-                return if !q.producer.load(Ordering::Acquire) {
+                // buffer is empty, check whether it's closed.
+                // relaxed is fine since Producer.drop does an acquire/release on .head
+                return if !q.producer.load(Ordering::Relaxed) {
                     Err(TryPopError::Disconnected)
                 } else {
                     Err(TryPopError::Empty)
@@ -186,7 +188,9 @@ impl<T, B: Buffer<T>> Consumer<T> for SPMCConsumer<T, B> {
 
 impl<T, B: Buffer<T>> Drop for SPMCProducer<T, B> {
     fn drop(&mut self) {
-        self.queue.producer.store(false, Ordering::Release);
+        self.queue.producer.store(false, Ordering::Relaxed);
+        // Acquire/Release .head to ensure other threads see new .closed
+        self.queue.head.fetch_add(0, Ordering::AcqRel);
     }
 }
 

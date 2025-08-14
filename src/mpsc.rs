@@ -104,7 +104,7 @@ impl<T, B: Buffer<T>> Producer<T> for MPSCProducer<T, B> {
         loop {
             if q.tail.load(Ordering::Acquire) + q.buf.size() > head {
                 break;
-            } else if !q.consumer.load(Ordering::Acquire) {
+            } else if !q.consumer.load(Ordering::Relaxed) {
                 return Err(PushError::Disconnected(value));
             }
             spin_loop();
@@ -125,7 +125,9 @@ impl<T, B: Buffer<T>> Producer<T> for MPSCProducer<T, B> {
             let head_plus_one = head + 1;
 
             if q.tail.load(Ordering::Acquire) + q.buf.size() <= head {
-                return if !q.consumer.load(Ordering::Acquire) {
+                // buffer is full, check whether it's closed.
+                // relaxed is fine since Consumer.drop does an acquire/release on .tail
+                return if !q.consumer.load(Ordering::Relaxed) {
                     Err(TryPushError::Disconnected(value))
                 } else {
                     Err(TryPushError::Full(value))
@@ -189,7 +191,9 @@ impl<T, B: Buffer<T>> Consumer<T> for MPSCConsumer<T, B> {
 
 impl<T, B: Buffer<T>> Drop for MPSCConsumer<T, B> {
     fn drop(&mut self) {
-        self.queue.consumer.store(false, Ordering::Release);
+        self.queue.consumer.store(false, Ordering::Relaxed);
+        // Acquire/Release .tail to ensure other threads see new .closed
+        self.queue.tail.fetch_add(0, Ordering::AcqRel);
     }
 }
 

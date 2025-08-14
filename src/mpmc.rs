@@ -34,7 +34,7 @@ unsafe impl<T: Send, B: Buffer<T>> Sync for MPMCConsumer<T, B> {}
 
 impl<T, B: Buffer<T>> Clone for MPMCConsumer<T, B> {
     fn clone(&self) -> Self {
-        self.queue.consumers.fetch_add(1, Ordering::Release);
+        self.queue.consumers.fetch_add(1, Ordering::Relaxed);
         MPMCConsumer {
             queue: self.queue.clone(),
         }
@@ -50,7 +50,7 @@ unsafe impl<T: Send, B: Buffer<T>> Sync for MPMCProducer<T, B> {}
 
 impl<T, B: Buffer<T>> Clone for MPMCProducer<T, B> {
     fn clone(&self) -> Self {
-        self.queue.producers.fetch_add(1, Ordering::Release);
+        self.queue.producers.fetch_add(1, Ordering::Relaxed);
         MPMCProducer {
             queue: self.queue.clone(),
         }
@@ -113,7 +113,7 @@ impl<T, B: Buffer<T>> Producer<T> for MPMCProducer<T, B> {
         loop {
             if q.tail.curr.load(Ordering::Acquire) + q.buf.size() > head {
                 break;
-            } else if q.consumers.load(Ordering::Acquire) == 0 {
+            } else if q.consumers.load(Ordering::Relaxed) == 0 {
                 return Err(PushError::Disconnected(value));
             }
             spin_loop();
@@ -134,7 +134,9 @@ impl<T, B: Buffer<T>> Producer<T> for MPMCProducer<T, B> {
             let head_plus_one = head + 1;
 
             if q.tail.curr.load(Ordering::Acquire) + q.buf.size() <= head {
-                return if q.consumers.load(Ordering::Acquire) == 0 {
+                // buffer is full, check whether it's closed.
+                // relaxed is fine since Consumer.drop does an acquire/release on .tail
+                return if q.consumers.load(Ordering::Relaxed) == 0 {
                     Err(TryPushError::Disconnected(value))
                 } else {
                     Err(TryPushError::Full(value))
@@ -166,7 +168,7 @@ impl<T, B: Buffer<T>> Consumer<T> for MPMCConsumer<T, B> {
         loop {
             if q.head.curr.load(Ordering::Acquire) >= tail_plus_one {
                 break;
-            } else if q.producers.load(Ordering::Acquire) == 0 {
+            } else if q.producers.load(Ordering::Relaxed) == 0 {
                 return Err(PopError::Disconnected);
             }
             spin_loop();
@@ -187,7 +189,9 @@ impl<T, B: Buffer<T>> Consumer<T> for MPMCConsumer<T, B> {
             let tail_plus_one = tail + 1;
 
             if q.head.curr.load(Ordering::Acquire) < tail_plus_one {
-                return if q.producers.load(Ordering::Acquire) == 0 {
+                // buffer is empty, check whether it's closed.
+                // relaxed is fine since Producer.drop does an acquire/release on .head
+                return if q.producers.load(Ordering::Relaxed) == 0 {
                     Err(TryPopError::Disconnected)
                 } else {
                     Err(TryPopError::Empty)
@@ -208,13 +212,17 @@ impl<T, B: Buffer<T>> Consumer<T> for MPMCConsumer<T, B> {
 
 impl<T, B: Buffer<T>> Drop for MPMCProducer<T, B> {
     fn drop(&mut self) {
-        self.queue.producers.fetch_sub(1, Ordering::Release);
+        self.queue.producers.fetch_sub(1, Ordering::Relaxed);
+        // Acquire/Release .head to ensure other threads see new .closed
+        self.queue.head.curr.fetch_add(0, Ordering::AcqRel);
     }
 }
 
 impl<T, B: Buffer<T>> Drop for MPMCConsumer<T, B> {
     fn drop(&mut self) {
-        self.queue.consumers.fetch_sub(1, Ordering::Release);
+        self.queue.consumers.fetch_sub(1, Ordering::Relaxed);
+        // Acquire/Release .tail to ensure other threads see new .closed
+        self.queue.tail.curr.fetch_add(0, Ordering::AcqRel);
     }
 }
 
